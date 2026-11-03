@@ -37,6 +37,8 @@ export type AdminUser = {
   email_verified: boolean;
   account_status: string;
   registration_date: string;
+  updated_at: string;
+  organization_id: number | null;
 };
 
 export type AdminApplication = {
@@ -56,3 +58,102 @@ export type AdminApplication = {
 };
 
 export type AdminActionResponse = { message: string; notification_sent: boolean | null };
+
+export type DocumentMetadata = {
+  id: string;
+  document_name: string;
+  original_filename: string;
+  owner_id: number;
+  category: string;
+  description: string | null;
+  file_extension: string;
+  mime_type: string;
+  file_size: number;
+  checksum: string | null;
+  visibility: 'PRIVATE' | 'SHARED' | 'RESTRICTED';
+  current_version: number;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DocumentSearchResult = DocumentMetadata & {
+  owner_name: string;
+  owner_username: string;
+  access_level: 'READ' | 'EDIT' | 'OWNER';
+};
+
+export type DocumentPermission = {
+  id: number;
+  granted_to_user_id: number;
+  recipient_username: string;
+  recipient_name: string;
+  recipient_email: string;
+  permission_level: 'READ' | 'EDIT';
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+export type DocumentVersion = {
+  id: string;
+  version_number: number;
+  original_filename: string;
+  file_extension: string;
+  mime_type: string;
+  file_size: number;
+  checksum: string | null;
+  created_by_user_id: number;
+  created_at: string;
+};
+
+export type DocumentActivity = {
+  id: string;
+  document_id: string | null;
+  actor_user_id: number;
+  actor_username: string;
+  action: string;
+  result: 'SUCCESS' | 'DENIED';
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
+export type SharedDocument = {
+  document: DocumentMetadata;
+  owner_name: string;
+  owner_username: string;
+  shared_at: string;
+  permission_level: 'READ' | 'EDIT';
+  expires_at: string | null;
+};
+
+export type SharedByMe = {
+  document_id: string;
+  permission_id: number;
+  document_name: string;
+  recipient_user_id: number;
+  recipient_name: string;
+  recipient_username: string;
+  permission_level: 'READ' | 'EDIT';
+  shared_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+export type DocumentFilters = {
+  search?: string;
+  owner_id?: number;
+  category?: string;
+  file_type?: string;
+  visibility?: 'PRIVATE' | 'SHARED' | 'RESTRICTED';
+  access_status?: 'OWNED' | 'SHARED';
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+  sort_by?: 'created_at' | 'document_name' | 'file_size';
+  sort_order?: 'asc' | 'desc';
+};
+
+export type EligibleShareUser = { id: number; full_name: string; username: string; email: string };
+export type Organization = { id: number; name: string; member_count: number };

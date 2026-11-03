@@ -284,5 +284,5 @@ def test_role_and_account_management_is_audited_and_protects_admin(client: InPro
     assert client.post("/api/v1/auth/login", json={"email": "managed@example.com", "password": "long-enough-secret"}).status_code == 401
     with TestSession() as session:
         actions = set(session.scalars(select(AuditLog.action).where(AuditLog.actor_id == admin_id, AuditLog.target_user_id == managed_id)).all())
-        assert {"ROLE_MODIFIED", "USER_SUSPENDED", "USER_ACTIVATED", "USER_DEACTIVATED"} <= actions
+        assert {"USER_ROLE_CHANGED", "ACCOUNT_SUSPENDED", "ACCOUNT_ACTIVATED", "ACCOUNT_DEACTIVATED"} <= actions
     assert client.get("/api/v1/admin/users").status_code == 401

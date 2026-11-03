@@ -40,7 +40,12 @@ def get_token_claims(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def get_current_user(claims: dict[str, Any] = Depends(get_token_claims), db: Session = Depends(get_db)) -> User:
     """Load the active user represented by the bearer token."""
     user = db.get(User, int(claims["sub"]))
-    if user is None or not user.is_active or claims.get("ver", 0) != user.token_version:
+    if (
+        user is None
+        or not user.is_active
+        or user.account_status != "ACTIVE"
+        or claims.get("ver", 0) != user.token_version
+    ):
         raise unauthorized()
     return user
 

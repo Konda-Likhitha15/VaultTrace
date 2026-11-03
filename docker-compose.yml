@@ -28,12 +28,23 @@ services:
       ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
       ADMIN_BOOTSTRAP_FULL_NAME: ${ADMIN_BOOTSTRAP_FULL_NAME:-}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      LOCAL_STORAGE_PATH: ${LOCAL_STORAGE_PATH:-./private_storage}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-vaulttrace-documents}
+      DOCUMENT_MAX_UPLOAD_BYTES: ${DOCUMENT_MAX_UPLOAD_BYTES:-5242880}
+      DOCUMENT_ALLOWED_EXTENSIONS: ${DOCUMENT_ALLOWED_EXTENSIONS:-pdf,png,jpg,jpeg,txt,csv,docx,xlsx}
     network_mode: host
+    volumes:
+      - ./private_storage:/srv/vaulttrace/private_storage
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+      VITE_DOCUMENT_MAX_UPLOAD_BYTES: ${VITE_DOCUMENT_MAX_UPLOAD_BYTES:-5242880}
+      VITE_DOCUMENT_ALLOWED_EXTENSIONS: ${VITE_DOCUMENT_ALLOWED_EXTENSIONS:-pdf,png,jpg,jpeg,txt,csv,docx,xlsx}
     ports:
       - "5173:5173"

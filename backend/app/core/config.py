@@ -1,5 +1,9 @@
 """Environment-based application settings."""
 
+from pathlib import Path
+from typing import Literal
+
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,10 +34,27 @@ class Settings(BaseSettings):
     smtp_from_email: str | None = None
     smtp_use_tls: bool | None = None
     password_reset_token_expire_minutes: int = 10
+    storage_provider: Literal["local", "supabase"] | None = None
+    local_storage_path: Path = Path("./private_storage")
+    supabase_url: str | None = None
+    supabase_service_role_key: SecretStr | None = None
+    supabase_storage_bucket: str = "vaulttrace-documents"
+    document_max_upload_bytes: int = 5_242_880
+    document_allowed_extensions: str = "pdf,png,jpg,jpeg,txt,csv,docx,xlsx"
     admin_bootstrap_email: str | None = None
     admin_bootstrap_username: str | None = None
     admin_bootstrap_password: str | None = None
     admin_bootstrap_full_name: str | None = None
+
+    @model_validator(mode="after")
+    def choose_storage_provider(self) -> "Settings":
+        """Default local environments to disk and production environments to Supabase."""
+        is_production = self.app_env.lower() in {"prod", "production"}
+        if is_production and self.storage_provider == "local":
+            raise ValueError("STORAGE_PROVIDER must be 'supabase' when APP_ENV is production.")
+        if self.storage_provider is None:
+            self.storage_provider = "supabase" if is_production else "local"
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

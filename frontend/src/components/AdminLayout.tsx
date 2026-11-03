@@ -8,6 +8,7 @@ const links = [
   ['/admin/applications', 'Applications'],
   ['/admin/roles', 'Roles'],
   ['/admin/accounts', 'Accounts'],
+  ['/admin/documents', 'Documents & audit'],
 ] as const;
 
 export function AdminLayout({ children }: { children?: ReactNode }) {

@@ -220,6 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # VaultTrace frontend, containers, secrets, and local tooling
+private_storage/
 node_modules/
 dist/
 coverage/

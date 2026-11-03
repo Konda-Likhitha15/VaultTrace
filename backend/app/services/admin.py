@@ -68,7 +68,11 @@ def get_application(db: Session, application_id: int) -> RegistrationApplication
 def approve_application(db: Session, application_id: int, actor_id: int, role_name: str) -> RegistrationApplication:
     """Atomically approve an application, activate its user, assign role and audit."""
     try:
-        application = db.scalar(select(RegistrationApplication).where(RegistrationApplication.id == application_id).with_for_update())
+        application = db.scalar(
+            select(RegistrationApplication)
+            .where(RegistrationApplication.id == application_id)
+            .with_for_update(of=RegistrationApplication)
+        )
         if application is None:
             raise AdminResourceNotFound
         if application.approval_status != "PENDING":
@@ -89,6 +93,8 @@ def approve_application(db: Session, application_id: int, actor_id: int, role_na
         application.user.role = role
         application.user.is_active = True
         application.user.account_status = "ACTIVE"
+        application.user.updated_at = now
+        application.user.token_version += 1
         _audit(db, actor_id, application.user_id, "APPLICATION_APPROVED", {"application_id": application.id, "role": role_name})
         _audit(db, actor_id, application.user_id, "ROLE_ASSIGNED", {"previous_role": previous_role, "new_role": role_name, "application_id": application.id})
         db.commit()
@@ -113,6 +119,8 @@ def reject_application(db: Session, application_id: int, actor_id: int, reason: 
         application.rejection_reason = reason.strip()
         application.user.is_active = False
         application.user.account_status = "REJECTED"
+        application.user.updated_at = now
+        application.user.token_version += 1
         _audit(db, actor_id, application.user_id, "APPLICATION_REJECTED", {"application_id": application.id, "reason": reason.strip()})
         db.commit()
         return application
@@ -124,7 +132,7 @@ def reject_application(db: Session, application_id: int, actor_id: int, reason: 
 def change_user_role(db: Session, user_id: int, actor_id: int, role_name: str) -> User:
     """Change an approved non-administrator's role and record the action."""
     try:
-        user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+        user = db.scalar(select(User).where(User.id == user_id).with_for_update(of=User))
         if user is None:
             raise AdminResourceNotFound
         if user.role.name == "Administrator" or user.id == actor_id:
@@ -136,10 +144,14 @@ def change_user_role(db: Session, user_id: int, actor_id: int, role_name: str) -
         if role is None or role_name not in {"Owner", "Viewer"}:
             raise AdminActionConflict("Requested role is not assignable")
         old_role = user.role.name
+        if old_role == role_name:
+            raise AdminActionConflict("Account already has the requested role")
         user.role = role
+        user.token_version += 1
+        user.updated_at = datetime.now(timezone.utc)
         if application:
             application.assigned_role_id = role.id
-        _audit(db, actor_id, user.id, "ROLE_MODIFIED", {"previous_role": old_role, "new_role": role_name})
+        _audit(db, actor_id, user.id, "USER_ROLE_CHANGED", {"previous_value": old_role, "new_value": role_name, "result": "success"})
         db.commit()
         return user
     except Exception:
@@ -150,22 +162,33 @@ def change_user_role(db: Session, user_id: int, actor_id: int, role_name: str) -
 def change_user_status(db: Session, user_id: int, actor_id: int, new_status: str) -> User:
     """Activate/deactivate/suspend a non-administrator account and audit it."""
     try:
-        user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+        user = db.scalar(select(User).where(User.id == user_id).with_for_update(of=User))
         if user is None:
             raise AdminResourceNotFound
         if user.role.name == "Administrator" or user.id == actor_id:
             raise ProtectedAdministrator
         if new_status not in {"ACTIVE", "INACTIVE", "SUSPENDED"}:
             raise AdminActionConflict("Unsupported account status")
-        if new_status == "ACTIVE":
-            application = db.scalar(select(RegistrationApplication).where(RegistrationApplication.user_id == user.id))
-            if not user.email_verified or (application and application.approval_status != "APPROVED"):
-                raise AdminActionConflict("Only verified and approved accounts can be activated")
         old_status = user.account_status
+        if old_status == new_status:
+            raise AdminActionConflict(f"Account is already {new_status}")
+        application = db.scalar(select(RegistrationApplication).where(RegistrationApplication.user_id == user.id))
+        if old_status == "REJECTED":
+            raise AdminActionConflict("Rejected accounts cannot be reactivated")
+        if old_status == "PENDING" and new_status != "ACTIVE":
+            raise AdminActionConflict("Pending accounts must be approved before deactivation or suspension")
+        if new_status == "ACTIVE" and (
+            not user.email_verified or (application and application.approval_status != "APPROVED")
+        ):
+            raise AdminActionConflict("Only verified and approved accounts can be activated")
+        if new_status in {"INACTIVE", "SUSPENDED"} and old_status not in {"ACTIVE", "INACTIVE", "SUSPENDED"}:
+            raise AdminActionConflict("Account cannot transition to the requested status")
         user.account_status = new_status
         user.is_active = new_status == "ACTIVE"
-        action = {"ACTIVE": "USER_ACTIVATED", "INACTIVE": "USER_DEACTIVATED", "SUSPENDED": "USER_SUSPENDED"}[new_status]
-        _audit(db, actor_id, user.id, action, {"previous_status": old_status, "new_status": new_status})
+        user.token_version += 1
+        user.updated_at = datetime.now(timezone.utc)
+        action = {"ACTIVE": "ACCOUNT_ACTIVATED", "INACTIVE": "ACCOUNT_DEACTIVATED", "SUSPENDED": "ACCOUNT_SUSPENDED"}[new_status]
+        _audit(db, actor_id, user.id, action, {"previous_value": old_status, "new_value": new_status, "result": "success"})
         db.commit()
         return user
     except Exception:

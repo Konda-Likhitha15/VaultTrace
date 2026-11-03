@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { loadCurrentUser, login as requestLogin, logout as requestLogout } from '../services/api';
 import type { User } from '../types';
 
@@ -15,6 +15,15 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AppContextProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    function expireSession() {
+      setToken(null);
+      setUser(null);
+    }
+    window.addEventListener('vaulttrace:unauthorized', expireSession);
+    return () => window.removeEventListener('vaulttrace:unauthorized', expireSession);
+  }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await requestLogin(email, password);

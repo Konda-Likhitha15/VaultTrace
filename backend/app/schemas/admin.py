@@ -18,6 +18,8 @@ class AdminUser(BaseModel):
     email_verified: bool
     account_status: str
     registration_date: datetime
+    updated_at: datetime
+    organization_id: int | None = None
 
 
 class AdminApplication(BaseModel):
@@ -79,3 +81,32 @@ class AdminActionResponse(BaseModel):
 
     message: str
     notification_sent: bool | None = None
+
+
+class OrganizationCreateRequest(BaseModel):
+    """Create an organization for administrator-controlled user assignment."""
+
+    name: str = Field(min_length=1, max_length=160)
+
+
+class OrganizationResponse(BaseModel):
+    """Organization identifier exposed to administrators."""
+
+    id: int
+    name: str
+    member_count: int
+
+
+class OrganizationAssignmentRequest(BaseModel):
+    """Assign or unassign a user from an organization."""
+
+    organization_id: int | None = Field(default=None, ge=1)
+
+
+class OrganizationUserResponse(BaseModel):
+    """Minimal registered-user search result within a tenant."""
+
+    id: int
+    full_name: str
+    username: str
+    email: EmailStr

@@ -17,6 +17,16 @@ class RegistrationConflict(Exception):
     """Raised when the requested email or username is already in use."""
 
 
+def _is_unique_constraint_violation(error: IntegrityError) -> bool:
+    """Distinguish duplicate-key failures from unrelated integrity errors."""
+    original = error.orig
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    if sqlstate is not None:
+        return sqlstate == "23505"
+    message = str(original).lower()
+    return "unique constraint failed" in message or "duplicate key value violates unique constraint" in message
+
+
 def create_registration_application(db: Session, request: RegistrationRequest) -> RegistrationApplication:
     """Consume verified OTP proof and create an inactive pending account."""
     email = str(request.email).strip().lower()
@@ -66,5 +76,7 @@ def create_registration_application(db: Session, request: RegistrationRequest) -
                 challenge.consumed_at = now
             db.flush()
     except IntegrityError as exc:
-        raise RegistrationConflict from exc
+        if _is_unique_constraint_violation(exc):
+            raise RegistrationConflict from exc
+        raise
     return application

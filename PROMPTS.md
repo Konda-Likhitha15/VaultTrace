@@ -91,3 +91,216 @@ Executed during Commit 1 continuation (results refer to those commands/runs, not
 - The live PostgreSQL/Mailpit check exercised the service path with a synthetic address and rolled back database writes. A full browser-driven signup → admin approval → login run has not been recorded as verified; Playwright E2E was not run.
 - The local database contains development administrator accounts, including one created for manual feature checks. Rotate any weak development password before using a shared or production environment. No admin email/password values are recorded here.
 - Production deployment, production SMTP, backups, monitoring, and production security review remain pending. Commit 2 document-storage/sharing features are intentionally out of scope.
+
+---
+
+# Commit 2: Document management
+
+## Complete implementation prompt and scope
+
+> Continue the existing VaultTrace implementation without recreating the project, changing its permanent folder structure, creating duplicate applications, or removing Commit 1 behavior. Implement document management with Python 3.12, FastAPI, React/TypeScript/Vite, PostgreSQL, SQLAlchemy 2, Alembic, Pydantic, Supabase Storage, and Pytest. Keep endpoints under `backend/app/api/v1`, models under `models`, schemas under `schemas`, business logic in services, and all runtime configuration in `core/config.py`.
+>
+> Add an indexed UUID `Document` metadata model and additive Alembic migration. PostgreSQL stores metadata only; actual file bytes belong in a private Supabase Storage bucket. Keep `SUPABASE_SERVICE_ROLE_KEY` backend-only, reject missing or public buckets, use safe owner/UUID storage keys, and do not silently fall back to public or local file storage. Add an adapter usable with mocked storage in automated tests.
+>
+> Implement authenticated upload/list/detail/download/delete APIs. Validate extension, file signature, MIME, size and empty files; do not trust browser MIME or user-provided paths. Persist metadata only after successful storage upload and attempt cleanup on database failure. Authorize every operation before object access, conceal other owners' metadata, and do not grant Administrators implicit access to other owners' files. Include name search, category/date filters, sorting and pagination.
+>
+> Add a responsive document page for supported role dashboards with upload progress, validation, listing, search/filter, metadata, download, delete confirmation, and loading/error/empty/success states. Keep Supabase credentials out of frontend code. Update README and PROMPTS.md with setup, migration, API, security, tests, and remaining limitations. Run isolated backend tests and frontend production build; report only executed results. Do not commit, deploy, or begin Commit 3.
+
+## Implemented and verified scope
+
+- Implemented files: `backend/app/models/document.py`, `backend/app/services/storage.py`, `backend/app/services/documents.py`, `backend/app/schemas/documents.py`, `backend/app/api/v1/documents.py`, `backend/alembic/versions/20261103_0004_documents.py`, and `backend/tests/test_documents.py`.
+- Modified files: `.env.example`, `docker-compose.yml`, `README.md`, `PROMPTS.md`, `backend/app/core/config.py`, `backend/app/models/__init__.py`, `backend/app/models/user.py`, `backend/app/api/v1/router.py`, `backend/app/main.py`, `frontend/src/App.tsx`, `frontend/src/components/AdminLayout.tsx`, `frontend/src/pages/DashboardPage.tsx`, `frontend/src/services/api.ts`, `frontend/src/types/index.ts`, `frontend/src/vite-env.d.ts`, and `frontend/vite.config.ts`.
+- Storage uses Supabase Storage REST through existing HTTPX; no new Python dependency was added. Environment placeholders include Supabase URL/service role, bucket, maximum bytes, and extension allowlist. The local `.env` was not modified.
+- Access policy implemented: all signed-in users can read only their own documents; Owner and Administrator can upload/delete only their own. Cross-user sharing and document ACLs are not part of Commit 2.
+
+## Actual validation record
+
+- `PYTHONPATH=backend likitha/bin/python -m pytest -q backend/tests/test_documents.py` — **13 passed** using isolated SQLite and mocked storage.
+- `PYTHONPATH=backend likitha/bin/python -m compileall -q backend/app backend/tests` — passed.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — passed; generated SQL includes the `documents` table and indexes.
+- OpenAPI inspection — passed; all document routes appear in the generated schema.
+- `cd frontend && PATH=/tmp/vaulttrace-node/bin:$PATH npm run build` — passed (TypeScript and Vite production build).
+- `docker compose config --quiet`, frontend package/TypeScript JSON parsing, and `git diff --check` — passed.
+- `PYTHONPATH=backend likitha/bin/python -m pytest -v backend/tests` — attempted, but the run stalled in a Commit 1 signup/admin integration request. Standalone FastAPI `/health` and `anyio.to_thread.run_sync()` checks also stalled in this environment, so the full suite result is **incomplete**, not passed.
+- `pg_isready -h 127.0.0.1 -p 5432` — reported no response. Therefore Alembic revision `20261103_0004` was not applied and the live PostgreSQL table was not verified. Supabase storage was not live-tested; automated tests use a mock adapter.
+
+## Known issues and pending setup
+
+- The local PostgreSQL service was unavailable during this stage. After starting it and confirming the existing `DATABASE_URL`, run the migration command from README and verify the new table before using the feature.
+- Create `vaulttrace-documents` as a private bucket in Supabase and configure backend-only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` before live storage calls. The actual provider has not yet been exercised.
+- Cross-owner sharing and ACL administration are not implemented; queries are strictly owner-scoped.
+- Confirm local PostgreSQL is reachable and at revision `20261103_0003` before applying revision `20261103_0004`. Preserve all existing rows.
+
+---
+
+# Commit 2 extension: local and production storage-provider abstraction
+
+## Complete implementation prompt and scope
+
+> Extend the existing Commit 2 implementation without changing the permanent project structure or breaking Commit 1. Implement interchangeable `LocalStorageProvider` and `SupabaseStorageProvider` classes behind the same `upload_file`, `download_file`, `delete_file`, and `file_exists` contract. Select the provider with `STORAGE_PROVIDER=local` for development and `STORAGE_PROVIDER=supabase` for deployment. Do not silently fall back when the selected provider is unavailable.
+>
+> The local provider must store bytes under a private backend-managed path (`./private_storage` by default), never in frontend public/static directories or an HTTP-served directory. Reject traversal and symlink escapes, use UUID-based keys, enforce the configured size limit, and rely on the common document validation service for extension/content/MIME checks. Keep actual file bytes out of PostgreSQL.
+>
+> Persist the storage provider on each document row. Existing Commit 2 rows must retain the provider they already use. Existing records must be read/deleted with their recorded provider even if the environment selection changes; the selector applies to new uploads. Add an additive migration that preserves IDs and metadata. Document a checksummed, recoverable local-to-Supabase copy/cutover strategy; changing the selector alone must never move data.
+>
+> Test local operations using temporary directories and Supabase operations with mocked HTTP. Cover upload/download/delete/existence, invalid paths, provider failures, selection and no-fallback behavior. Update README, PROMPTS, THREATS and `.env.example`; preserve `.env` values and do not begin Commit 3.
+
+## Implementation inventory
+
+- Added `backend/alembic/versions/20261104_0005_storage_provider.py`, which adds a non-null `storage_provider` column and a provider allowlist constraint. Historical document rows are labeled `supabase` to preserve the previous Commit 2 behavior. No IDs, other metadata, or file objects are changed by the migration.
+- Added `LocalStorageProvider` and `SupabaseStorageProvider` in the existing `backend/app/services/storage.py`; both implement `StorageService`. Shared signature/MIME/size validation lives in `backend/app/services/document_validation.py` and runs in the document service and both providers. The old `SupabaseStorage` name remains an alias for compatibility. `create_storage_provider()` selects only the requested provider and raises a configuration error instead of falling back.
+- `backend/app/services/documents.py` persists a provider label for new uploads and dispatches read/delete to the provider recorded in metadata after owner authorization.
+- Added `backend/tests/test_storage_providers.py`. Modified `.env.example`, local `.env` (only appended local provider/path settings; existing entries kept), `.gitignore`, `docker-compose.yml` (persistent private storage mount), `backend/app/core/config.py`, `backend/app/models/document.py`, `backend/app/api/v1/documents.py`, `backend/tests/test_documents.py`, README, and this file.
+- `APP_ENV=production` defaults to Supabase and rejects explicit local storage. Local mode defaults to `./private_storage`; that directory is Git-ignored and not served by FastAPI.
+
+## Validation record
+
+- `PYTHONPATH=backend likitha/bin/python -m pytest -q backend/tests/test_storage_providers.py backend/tests/test_documents.py` — **32 passed**. Local disk uses temporary directories; Supabase HTTP uses `httpx.MockTransport`.
+- `PYTHONPATH=backend likitha/bin/python -m compileall -q backend/app backend/tests` — passed.
+- Python OpenAPI inspection — passed; the active environment selected `local`, and document endpoints appear in the OpenAPI schema.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — passed; generated SQL shows old rows get `storage_provider='supabase'` and the new provider constraint.
+- `cd frontend && PATH=/tmp/vaulttrace-node/bin:$PATH npm run build` — passed (TypeScript and Vite production build).
+- `docker compose config --quiet` and `git diff --check` — passed.
+- `timeout 30s env PYTHONPATH=backend likitha/bin/python -m pytest -v backend/tests` — timed out after the first Commit 1 test passed and the existing signup/admin integration test began. This is incomplete full-suite validation, not a pass.
+- Live Alembic migration/table verification was not run because the local PostgreSQL server was not accepting connections in the previous check. Supabase credentials/provider were not used; its operations were mocked.
+
+The database migration must only be applied after checking that the intended PostgreSQL service is reachable.
+
+---
+
+# Account management, role updates, and dashboard authorization fix
+
+## Complete implementation prompt and scope
+
+> Continue the existing VaultTrace implementation. Inspect the existing account-management page, API, authentication dependencies, User/Role models and schemas, migrations, services, API client, auth context, routing, sidebars, tests, and available logs before changing code. Preserve Commit 1/2, the permanent folder structure, PostgreSQL data, `.env`, and existing migrations. Do not reset the database or commit/push.
+>
+> Fix administrator account activation/deactivation/reactivation and Owner/Viewer role changes. Validate status transitions and application approval, protect administrator and self accounts, update PostgreSQL transactionally, preserve the role relationship, update timestamps, invalidate stale JWTs, and write actor/target/value/result audit events. Return useful safe errors. The UI must confirm sensitive actions, show loading, prevent duplicate updates, display API errors, and refresh persisted user data after success.
+>
+> Enforce role-based route and sidebar navigation for Administrator, Owner, and Viewer. Keep admin APIs independently protected in FastAPI, redirect unauthorized direct URLs, handle expired JWTs, and preserve backend document ownership authorization. Do not imply that cross-user sharing exists. Add backend tests for account transitions, roles, authorization, audit, token invalidation, and failures; add dashboard coverage where the existing test setup permits. Update README and THREATS with actual outcomes. Run `pytest -v` and `npm run build`; do not report checks or live database changes unless executed. Do not start Commit 3.
+
+## Implemented changes
+
+- Root cause found in the existing PostgreSQL update query: `User.role` is configured with joined eager loading, while the status/role service used an unscoped `SELECT ... FOR UPDATE`. PostgreSQL can reject locking the nullable side of the generated outer join (`FOR UPDATE cannot be applied to the nullable side of an outer join`). The fix scopes the lock with `FOR UPDATE OF users`; this was confirmed by inspecting/compiling the generated statement, not by a live PostgreSQL update because the local server is currently unavailable. `pg_isready -h 127.0.0.1 -p 5432` reported “no response” during this stage, which also independently prevents live account changes.
+- Status transitions now require verified email and approved applications to activate; rejected accounts cannot be reactivated. Admin/self targets and duplicate state/role assignments are rejected. Status/role changes increment `token_version`, update `updated_at`, and commit audit entries with actor, target, prior/new value, action and success result. Current-user authentication checks current DB status/version; admin list responses include `updated_at`.
+- Database exceptions in the authentication dependency and update services now return safe HTTP 503 details instead of leaking connection/SQL diagnostics; the admin UI displays response detail or HTTP/network status.
+- Added additive Alembic revision `20261104_0006` to populate and maintain `users.updated_at` without deleting existing users. Migration was not applied because PostgreSQL was unreachable.
+- Admin account UI reports API details/status, handles network failures, disables repeated actions, shows loading, confirms changes, and reloads list data after successful requests. A 401 response expires the in-memory frontend session. Owner and Viewer dashboard sidebars now show role-appropriate links; `/dashboard` resolves to the user's role dashboard, and `/documents/upload` is restricted to Owners/Administrators. FastAPI's existing administrator router dependency remains in force.
+- Files modified: `backend/app/main.py`, `backend/app/models/user.py`, `backend/app/services/admin.py`, `backend/app/api/v1/admin.py`, `backend/app/api/dependencies.py`, `backend/app/schemas/admin.py`, `backend/alembic/versions/20261104_0006_user_updated_at.py`, `backend/tests/test_auth_api.py`, `backend/tests/test_admin_account_management.py`, `frontend/src/pages/AdminUsersPage.tsx`, `frontend/src/pages/DashboardPage.tsx`, `frontend/src/pages/DocumentsPage.tsx`, `frontend/src/components/UserLayout.tsx`, `frontend/src/App.tsx`, `frontend/src/context/AppContext.tsx`, `frontend/src/services/api.ts`, `frontend/src/types/index.ts`, `frontend/e2e/dashboard-authorization.spec.ts`, `README.md`, and `THREATS.md`.
+
+## Validation and remaining work
+
+- `PYTHONPATH=backend likitha/bin/python -m pytest -q backend/tests/test_admin_account_management.py backend/tests/test_documents.py backend/tests/test_storage_providers.py` — **42 passed**.
+- `timeout 45s env PYTHONPATH=backend likitha/bin/python -m pytest -v backend/tests` — **incomplete; timed out (124)** after the new account service tests and one existing auth test passed, while the existing signup/admin integration test was running. This is not a full-suite pass.
+- `cd frontend && npm run build` — **passed**, strict TypeScript check and Vite production bundle (108 modules).
+- `PYTHONPATH=backend likitha/bin/python -m compileall -q backend/app backend/tests` — passed.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — passed offline SQL generation through revision `20261104_0006`; this did not connect to or modify PostgreSQL.
+- PostgreSQL dialect compilation of the service locking query — passed; generated SQL includes `FOR UPDATE OF users` with the role outer join.
+- `git diff --check` — passed.
+- `cd frontend && npm run test:e2e` — could not run because the default Node.js 18.19.1 is below Playwright's Node 20 requirement. Retrying with Node 22 reached the Vite server start but the sandbox denied binding to `127.0.0.1:5173` (`EPERM`), so browser assertions remain unverified.
+- `pg_isready -h 127.0.0.1 -p 5432` — **no response**. Live PostgreSQL migration/update and real account workflow remain pending. No migration was applied and no existing database record was changed by this stage.
+
+---
+
+# Follow-up: PostgreSQL signup conflict diagnosis
+
+- PostgreSQL logs showed inserts failing on `users.updated_at` because the column was `NOT NULL` without a server default. The registration service then mapped every SQLAlchemy `IntegrityError` to `RegistrationConflict`, so this schema error appeared in the UI as “Email or username is already registered.” This was the actual cause of the repeated 409 response; the email and username need not be duplicates.
+- Added `20261104_0007_user_updated_at_default.py` to set the PostgreSQL server default to `now()` while retaining all timestamps and rows. The prior `0006` migration is preserved; no existing revision was rewritten.
+- Changed signup integrity-error handling so only PostgreSQL unique violation SQLSTATE `23505` (or SQLite unique-constraint errors in tests) is returned as a duplicate conflict. Other integrity failures propagate to the safe database error handler.
+- Added `backend/tests/test_registration_errors.py` for PostgreSQL unique, non-unique integrity, and SQLite unique classification.
+- PostgreSQL was down when checked (`pg_lsclusters` showed cluster `16/main` down; `pg_isready` had no response), so no migration was applied. The account data and `.env` were not changed. Before running `upgrade head`, check `alembic current`; if the database is at `20261104_0006`, the next migration adds the default.
+- Validation for this follow-up: `PYTHONPATH=backend likitha/bin/python -m pytest -q backend/tests/test_registration_errors.py backend/tests/test_admin_account_management.py` — **13 passed**; `compileall` passed; offline Alembic SQL generation includes `ALTER COLUMN updated_at SET DEFAULT now()` for `20261104_0007`; `git diff --check` passed. Live migration and signup retry remain pending because PostgreSQL is down.
+
+---
+
+# Document management UI, sharing, and access-control enhancement
+
+## Scope requested
+
+> Continue the existing VaultTrace app without rebuilding it, changing the folder structure, removing Commit 1/2 behavior, resetting PostgreSQL, deleting records/migrations, overwriting `.env`, or committing/pushing. Inspect the existing frontend routes/pages, document APIs/services/models/storage/auth/authorization/audit/tests and documentation first.
+>
+> Give My Documents, Upload Documents, Search and Categories, Shared With Me, Shared By Me, Deleted Documents, and Administrator document management distinct route-specific purpose and UI. Show owned document metadata and actions; support multi-file drag/drop upload with progress/status and private-by-default visibility; search by UUID/name/original filename with authorized filters; show explicit incoming/outgoing grants, expiry and status; allow restore for soft-deleted documents; provide empty, loading, error, success, and confirmation states.
+>
+> Add explicit per-document access grants only if missing, for registered users by email or ID, with `VIEWER`, `EDITOR`, and delegated `OWNER` levels, optional expiry, revocation, timestamps, safe duplicate handling, and an additive Alembic migration. Actual document ownership stays with the uploader. Enforce Viewer read-only behavior, Editor metadata/version changes, Owner document/access management, and explicit Administrator metadata/audit/revocation capabilities in FastAPI, not only in React. Administrators must not get automatic content access.
+>
+> Keep files in the selected private local or Supabase storage provider, verify content/MIME/size and checksum, persist metadata/version/audit transactionally, authorize every read and mutation, avoid public URLs, and prevent search/ID guessing from exposing unauthorized records. Record upload/download/preview/share/permission/version/delete/restore/denied-access activity without secrets or file contents. Add service/API/UI coverage with mocked storage and isolated test data. Update README, PROMPTS, and THREATS with actual outcomes. Run backend tests and frontend production build; only claim live upload, PostgreSQL persistence, or actual provider behavior when directly verified. Stop before Commit 3.
+
+## Implementation stage record
+
+- Existing implementation was inspected before changes. The prior `App.tsx` routed `/documents/upload` to the same `DocumentsPage` as `/documents`; the old document navigation also linked to `#filters` on that page. Search/category/upload navigation therefore did not render their own workflow. There was no grant/version/activity schema or migration in the active model layer before this stage.
+- Added `backend/alembic/versions/20261104_0008_document_access_versions.py`. It adds visibility, version number, and soft-delete columns; creates permission, document-version and document-activity tables; and backfills version 1 metadata for existing document objects while preserving document IDs and storage pointers. It is additive and was generated offline only; it has **not** been applied to PostgreSQL in this stage.
+- Added SQLAlchemy models `DocumentVersion`, `DocumentPermission`, and `DocumentActivity` in `backend/app/models/document.py`, exported by `models/__init__.py`. Existing `Document` gains visibility, current-version, soft-delete, and relationship fields. Added safe response/request schemas in `backend/app/schemas/documents.py`.
+- Added collaboration workflows to `backend/app/services/document_collaboration.py`: permission grant/update/revoke and expiry, authorized metadata updates, retained version upload/list/download, incoming/outgoing sharing lists, per-document activity, authorized category discovery, and administrator metadata/permission/audit operations. Existing `backend/app/services/documents.py` now scopes search to owners and live explicit grants, records access denials/downloads/uploads/deletion/restoration, supports soft deletion and restoration, and checks authorization before provider reads. Public visibility labels do not grant access. Upload now requires the Owner role.
+- Expanded `backend/app/api/v1/documents.py` with authorized search, categories, incoming/outgoing shares, deleted listing, preview, metadata, versions, permissions, activity, restore and soft-delete routes. Added administrator metadata, permission inventory, audit, and permission-revocation routes in `backend/app/api/v1/admin.py`; admin responses omit storage pointers and contents.
+- Added distinct frontend pages `DocumentUploadPage.tsx`, `DocumentSearchPage.tsx`, `DocumentCategoriesPage.tsx`, `SharedWithMePage.tsx`, `SharedByMePage.tsx`, `DeletedDocumentsPage.tsx`, and `AdminDocumentsPage.tsx`. Reworked `DocumentsPage.tsx` as My Documents and added `DocumentAccessDialog.tsx` and `DocumentPreviewDialog.tsx`. Updated `App.tsx`, `UserLayout.tsx`, `AdminLayout.tsx`, `services/api.ts`, and document types. Viewer routes do not expose edit controls; backend still decides every action.
+- Updated `README.md` and `THREATS.md`; earlier Commit 1, Commit 2, storage-provider, account-management, and signup-diagnosis records above were retained.
+
+## Actual validation and limits
+
+- `PYTHONPATH=backend likitha/bin/python -m pytest -q backend/tests/test_documents.py backend/tests/test_storage_providers.py backend/tests/test_admin_account_management.py backend/tests/test_registration_errors.py` — **52 passed** in 4.13 seconds. This runs isolated SQLite/service tests and mocked storage; it does not prove live PostgreSQL or live Supabase behavior.
+- `PYTHONPATH=backend likitha/bin/python -m compileall -q backend/app backend/alembic/versions backend/tests` — passed.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — passed and generated SQL through revision `20261104_0008`; this is offline SQL generation, not a migration execution.
+- `npm run build` (executed from `frontend/`) — passed after static import cleanup: strict TypeScript check and Vite production build (117 modules; no warnings).
+- `git diff --check` — passed.
+- `PYTHONPATH=backend likitha/bin/python -m pytest -q` was attempted. It progressed through initial tests but stalled in the existing auth/signup API integration test and was manually interrupted. The full backend suite is **incomplete**, not passed.
+- No actual upload-to-PostgreSQL-and-provider-download flow was verified. Automated tests exercise service upload, metadata persistence in isolated SQLite, download, checksums, and mocked local/Supabase operations. A live PostgreSQL migration and either configured storage provider are still required to verify persistence end to end.
+- Python import/OpenAPI inspection passed: `app.main` imported and registered 52 routes, including 25 document paths. `pg_isready -h 127.0.0.1 -p 5432` returned `127.0.0.1:5432 - no response`.
+
+## Remaining setup and known issues
+
+- Apply revision `20261104_0008` only after confirming the intended local PostgreSQL is reachable and backing it up; then verify Alembic current revision and the new tables. Existing user/document rows are not deleted by the migration.
+- Verify one real upload, metadata/version/audit rows, download, and revocation against the developer's configured local provider. To verify Supabase, configure the backend-only service credentials and private bucket first.
+- Diagnose the existing test-suite API integration hang and rerun `pytest -v`; the tested subset does not replace full regression coverage.
+- Added Playwright coverage for sign-in/signup, Owner/Viewer/Admin navigation, unauthorized direct route handling, distinct upload/search/category screens, and the Shared With Me empty state. `npm run test:e2e` could not run with the installed Node 18 because Playwright requires Node 20+. Retrying with the available Node 22 reached Playwright but its configured Vite web server exited before startup in this sandbox, so browser assertions remain unverified. Sharing/revoke interaction tests remain to be added.
+- At the end of this preceding document-management stage, no Commit 3 features had been started. The subsequent Commit 3 implementation record below supersedes that status. No git commit or push was made.
+
+---
+
+# Commit 3 — centralized authorization and same-organization sharing
+
+## Requested scope and architecture decisions
+
+- Continued the existing VaultTrace implementation without replacing folders or rebuilding the application. Centralize document authorization, standardize READ/EDIT permissions while retaining legacy VIEWER/EDITOR support, enforce ownership and same-organization sharing, provide organization-scoped user search, immediately honor revocation, connect successful upload to a Share action, improve API error messages, and update documentation/tests.
+- Existing code inspection found no organization/customer/tenant model or user relationship. Before tenant-dependent changes, the user approved adding `organizations` and nullable `users.organization_id`, retaining existing users as unassigned, and providing admin assignment. Organization membership is never inferred from email domains.
+- Only the actual document owner may grant/change/revoke permissions, soft-delete/restore, or review per-document activity. READ permits metadata/preview/download/version history; EDIT additionally permits metadata edits and version upload. Legacy VIEWER maps to READ; EDITOR maps to EDIT; legacy delegated OWNER is limited to EDIT and has no owner-only powers. New assignments accept READ/EDIT only.
+- A shared grant must point to an active, email-verified user whose non-null organization ID equals the document owner's. Current account, grant, expiry, revocation, and organization state is queried from PostgreSQL on each protected operation. Administrator status does not grant file-content access.
+
+## Files created
+
+- `backend/app/models/organization.py`
+- `backend/alembic/versions/20261104_0009_organizations.py`
+- `backend/tests/test_document_authorization_api.py`
+
+## Files modified
+
+- Backend: `backend/app/models/user.py`, `backend/app/models/__init__.py`, `backend/app/schemas/admin.py`, `backend/app/schemas/documents.py`, `backend/app/api/v1/admin.py`, `backend/app/api/v1/documents.py`, `backend/app/services/documents.py`, `backend/app/services/document_collaboration.py`.
+- Tests: `backend/tests/test_documents.py`, `backend/tests/test_admin_account_management.py`.
+- Frontend: `frontend/src/services/api.ts`, `frontend/src/types/index.ts`, `frontend/src/pages/AdminUsersPage.tsx`, `frontend/src/pages/DocumentUploadPage.tsx`, `frontend/src/pages/DocumentsPage.tsx`, `frontend/src/pages/SharedWithMePage.tsx`, `frontend/src/pages/SharedByMePage.tsx`, `frontend/src/components/DocumentAccessDialog.tsx`.
+- Documentation: `README.md`, `THREATS.md`, and this `PROMPTS.md`.
+
+## API and database changes
+
+- Migration `20261104_0009` creates `organizations` and an indexed, nullable foreign key `users.organization_id` (`ON DELETE SET NULL`). It does not assign organizations or modify/delete existing user/document records.
+- Added admin routes `GET/POST /api/v1/admin/organizations` and `PATCH /api/v1/admin/users/{user_id}/organization`. Creation and membership assignment are audited.
+- Added owner-only `GET /api/v1/documents/{document_id}/eligible-users?q=...`, scoped to active, verified members of the owner's organization.
+- Existing permission routes now accept READ/EDIT while mapping to legacy database labels for compatibility. Search, category, incoming shares, document operations, and permission operations enforce current authorization server-side.
+- Added operation authorization audit events and normalized permission audit actions (`PERMISSION_GRANTED`, `PERMISSION_UPDATED`, `PERMISSION_REVOKED`, metadata/read/edit allowed/denied events).
+- Frontend includes admin organization assignment/creation, same-organization recipient search, READ/EDIT selection, and a Share action on successful uploads. Version history displays checksum, uploader ID, and timestamp. API errors distinguish response statuses from no-response/timeouts.
+
+## Validation actually executed
+
+- `PYTHONPATH=.:backend likitha/bin/pytest -q backend/tests/test_admin_account_management.py::test_admin_can_create_organization_and_assign_existing_user backend/tests/test_document_authorization_api.py backend/tests/test_documents.py backend/tests/test_storage_providers.py backend/tests/test_registration_errors.py` — **46 passed**.
+- `cd frontend && npm run build` — **passed**; strict TypeScript check and Vite production bundle (117 modules).
+- `PYTHONPATH=backend likitha/bin/python -m compileall -q backend/app backend/alembic/versions backend/tests` — **passed**.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — **passed offline**, generated SQL through `20261104_0009`. This did not connect to or modify PostgreSQL.
+- Python import/OpenAPI check — **passed**; 56 app routes, 46 OpenAPI paths, including organization creation/assignment and eligible-recipient search.
+- `git diff --check` — **passed**.
+- `pg_isready -h 127.0.0.1 -p 5432` — **no response**. `curl http://127.0.0.1:8000/health` — connection refused. Thus no live PostgreSQL migration, persisted database workflow, or real local/Supabase upload/download was verified. Current “Could not reach API” root cause is the backend process is not listening on port 8000; the specific earlier browser incident cannot be reconstructed without its request trace.
+- `timeout 60s env PYTHONPATH=.:backend likitha/bin/pytest -q -k 'not test_otp_signup_pending_then_admin_approval_and_login'` — **incomplete (exit 124)**. The existing full auth/in-process ASGI suite has a hanging request; do not treat this as a full-suite pass. Focused tests above are isolated SQLite/service and route-function coverage with mocked storage.
+
+## Remaining setup and work
+
+- Start local PostgreSQL, check the intended target and current revision, back it up, then apply `20261104_0009`; verify the new table and nullable user column. The migration has not been applied.
+- Assign existing users explicitly under administrator organization management before testing sharing; unassigned users cannot send/receive shares.
+- Run the live registration/login/document workflow with PostgreSQL and selected storage provider; verify actual bytes/metadata/grant/revocation/audit persistence. Supabase still requires valid backend-only credentials and a private bucket.
+- Diagnose the existing ASGI/auth test hang and rerun the complete `pytest -v` suite. Browser/E2E verification also remains outstanding.
+- No commit, push, deployment, or Commit 4 work was performed.

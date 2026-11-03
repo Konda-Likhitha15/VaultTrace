@@ -6,6 +6,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import get_current_user, get_token_claims, require_roles
 from app.api.v1.admin import router as admin_router
+from app.api.v1.documents import router as documents_router
 from app.db.session import get_db
 from app.models import User
 from app.schemas.auth import Credentials, OtpRequest, OtpResponse, OtpVerificationRequest, PasswordResetRequest, PasswordResetOtpVerificationRequest, ResetAuthorizationResponse, RegistrationRequest, RegistrationResponse, TokenResponse, UserResponse
@@ -170,3 +171,4 @@ def owner_dashboard(user: User = Depends(require_roles("Administrator", "Owner")
 
 
 api_router.include_router(admin_router)
+api_router.include_router(documents_router)
