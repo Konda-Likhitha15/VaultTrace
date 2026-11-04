@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models import Role, User
+from app.services.audit import record_audit_event
 
 
 def bootstrap_admin() -> bool:
@@ -35,18 +36,19 @@ def bootstrap_admin() -> bool:
             return False
         if session.scalar(select(User.id).where((User.email == normalized_email) | (User.username == normalized_username))) is not None:
             raise ValueError("Bootstrap email or username already belongs to a non-administrator account")
-        session.add(
-            User(
-                full_name=full_name.strip(),
-                username=normalized_username,
-                email=normalized_email,
-                password_hash=hash_password(password),
-                role=admin_role,
-                is_active=True,
-                email_verified=True,
-                account_status="ACTIVE",
-            )
+        admin = User(
+            full_name=full_name.strip(),
+            username=normalized_username,
+            email=normalized_email,
+            password_hash=hash_password(password),
+            role=admin_role,
+            is_active=True,
+            email_verified=True,
+            account_status="ACTIVE",
         )
+        session.add(admin)
+        session.flush()
+        record_audit_event(session, "ADMIN_BOOTSTRAPPED", actor_email="system", actor_username="bootstrap", target_user_id=admin.id, resource_type="User", resource_id=admin.id, details={"role": "Administrator"})
     return True
 
 

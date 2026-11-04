@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
 from app.db.session import get_db
-from app.models import DocumentActivity, DocumentPermission, User
+from app.models import DocumentActivity, DocumentPermission, DocumentVersion, User
 from app.schemas.documents import (
     DocumentActivityResponse,
     DocumentMetadataUpdate,
@@ -128,6 +128,23 @@ def _activity_response(event: DocumentActivity) -> DocumentActivityResponse:
         result=event.result,
         details=event.details,
         created_at=event.created_at,
+    )
+
+
+def _version_response(version: DocumentVersion, db: Session) -> DocumentVersionResponse:
+    """Expose version metadata and the uploader's current display name."""
+    uploader = db.get(User, version.created_by_user_id)
+    return DocumentVersionResponse(
+        id=version.id,
+        version_number=version.version_number,
+        original_filename=version.original_filename,
+        file_extension=version.file_extension,
+        mime_type=version.mime_type,
+        file_size=version.file_size,
+        checksum=version.checksum,
+        created_by_user_id=version.created_by_user_id,
+        created_by_full_name=uploader.full_name if uploader else "Unknown user",
+        created_at=version.created_at,
     )
 
 
@@ -410,7 +427,7 @@ def patch_document(
 def get_document_versions(document_id: UUID, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[DocumentVersionResponse]:
     """List immutable version metadata to anyone with document access."""
     try:
-        return [DocumentVersionResponse.model_validate(item) for item in list_versions(db, user.id, document_id)]
+        return [_version_response(item, db) for item in list_versions(db, user.id, document_id)]
     except DocumentNotFound as exc:
         raise HTTPException(status_code=404, detail="Document not found.") from exc
 
@@ -429,7 +446,7 @@ def post_document_version(
         content = file.file.read(settings.document_max_upload_bytes + 1)
         client_ip, user_agent = _request_metadata(request)
         version = upload_document_version(db, storage, user.id, document_id, file.filename, file.content_type, content, request_ip=client_ip, user_agent=user_agent)
-        return DocumentVersionResponse.model_validate(version)
+        return _version_response(version, db)
     except DocumentNotFound as exc:
         raise HTTPException(status_code=404, detail="Document not found.") from exc
     except DocumentPermissionDenied as exc:

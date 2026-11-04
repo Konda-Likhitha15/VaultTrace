@@ -1,6 +1,7 @@
 """Document security and persistence tests with isolated PostgreSQL-free fixtures."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -9,13 +10,14 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.security import hash_password
 from app.db.base import Base
-from app.models import Document, DocumentActivity, DocumentPermission, DocumentVersion, Organization, Role, User
+from app.models import AuditLog, Document, DocumentActivity, DocumentPermission, DocumentVersion, Organization, Role, User
 from app.services.document_collaboration import (
     admin_document_activity,
     admin_document_metadata,
     admin_document_permissions,
     admin_revoke_permission,
     document_activity,
+    download_version,
     eligible_share_users,
     grant_permission,
     list_permissions,
@@ -23,6 +25,7 @@ from app.services.document_collaboration import (
     revoke_permission,
     shared_with_me,
     update_permission,
+    update_document_metadata,
     upload_document_version,
 )
 from app.services.documents import (
@@ -376,6 +379,53 @@ def test_editor_can_upload_version_and_old_file_remains_available(identities) ->
         assert storage.download_file(versions[1].storage_key) == PDF
         assert storage.download_file(versions[0].storage_key) == pdf_v2
         assert "DOCUMENT_VERSION_CREATED" in session.scalars(select(DocumentActivity.action).where(DocumentActivity.document_id == document.id)).all()
+
+
+def test_version_history_handles_empty_single_and_downloads_current_and_previous_versions(identities) -> None:
+    owner, _other, viewer = identities
+    storage = FakeStorage()
+    second_pdf = b"%PDF-1.7\nsecond revision\n%%EOF"
+    with TestSession() as session:
+        document = create_pdf(session, storage, owner, "Single version")
+        initial = list_versions(session, owner.id, document.id)
+        assert len(initial) == 1
+        assert (initial[0].version_number, initial[0].original_filename, initial[0].file_size) == (1, "report.pdf", len(PDF))
+        assert initial[0].created_by_user_id == owner.id
+        current, current_bytes = download_version(session, lambda _provider: storage, owner.id, document.id, initial[0].id)
+        assert current.id == initial[0].id and current_bytes == PDF
+
+        upload_document_version(session, storage, owner.id, document.id, "report-v2.pdf", "application/pdf", second_pdf)
+        versions = list_versions(session, owner.id, document.id)
+        assert [item.version_number for item in versions] == [2, 1]
+        old, old_bytes = download_version(session, lambda _provider: storage, owner.id, document.id, versions[1].id)
+        assert old.version_number == 1 and old_bytes == PDF
+
+        session.delete(versions[0])
+        session.delete(versions[1])
+        session.flush()
+        assert list_versions(session, owner.id, document.id) == []
+        with pytest.raises(DocumentNotFound):
+            list_versions(session, viewer.id, document.id)
+        with pytest.raises(DocumentNotFound):
+            list_versions(session, owner.id, uuid4())
+
+
+def test_audit_trail_captures_document_upload_download_metadata_sharing_and_denial(identities) -> None:
+    owner, _other, viewer = identities
+    storage = FakeStorage()
+    with TestSession() as session:
+        document = create_pdf(session, storage, owner, "Audit record")
+        downloaded, content = download_document(session, lambda _provider: storage, owner.id, document.id)
+        assert downloaded.id == document.id and content == PDF
+        update_document_metadata(session, owner.id, document.id, {"document_name": "Renamed audit record"})
+        grant = grant_permission(session, owner.id, document.id, recipient_user_id=viewer.id, recipient_email=None, permission_level="READ", expires_at=None)
+        revoke_permission(session, owner.id, document.id, grant.id)
+        with pytest.raises(DocumentNotFound):
+            download_document(session, lambda _provider: storage, viewer.id, document.id)
+        events = session.scalars(select(AuditLog).where(AuditLog.resource_id == str(document.id))).all()
+        actions = {event.action for event in events}
+        assert {"DOCUMENT_UPLOADED", "DOCUMENT_DOWNLOADED", "DOCUMENT_METADATA_UPDATED", "PERMISSION_GRANTED", "PERMISSION_REVOKED", "DOCUMENT_READ_DENIED"} <= actions
+        assert all(event.outcome == "FAILURE" for event in events if event.action == "DOCUMENT_READ_DENIED")
 
 
 def test_soft_delete_revoke_and_restore_preserve_file_but_not_old_permissions(identities) -> None:

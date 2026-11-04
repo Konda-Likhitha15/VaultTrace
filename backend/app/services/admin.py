@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import AuditLog, RegistrationApplication, Role, User
+from app.models import RegistrationApplication, Role, User
+from app.services.audit import record_audit_event
 
 
 class AdminResourceNotFound(Exception):
@@ -21,8 +22,21 @@ class ProtectedAdministrator(Exception):
 
 
 def _audit(db: Session, actor_id: int, target_user_id: int, action: str, details: dict[str, object]) -> None:
-    """Add an audit row to the caller's current transaction."""
-    db.add(AuditLog(actor_id=actor_id, target_user_id=target_user_id, action=action, details=details))
+    """Add one sanitized audit row to the caller's transaction."""
+    actor = db.get(User, actor_id)
+    target = db.get(User, target_user_id)
+    previous = {"role": details["previous_role"]} if "previous_role" in details else None
+    new = {"role": details["new_role"]} if "new_role" in details else None
+    if "previous_value" in details:
+        previous = {"value": details["previous_value"]}
+    if "new_value" in details:
+        new = {"value": details["new_value"]}
+    record_audit_event(
+        db, action, actor=actor, actor_id=actor_id, target_user_id=target_user_id,
+        resource_type="User", resource_id=target_user_id,
+        organization_id=target.organization_id if target else None,
+        details=details, previous_state=previous, new_state=new,
+    )
 
 
 def dashboard_overview(db: Session) -> dict[str, int]:
@@ -121,7 +135,7 @@ def reject_application(db: Session, application_id: int, actor_id: int, reason: 
         application.user.account_status = "REJECTED"
         application.user.updated_at = now
         application.user.token_version += 1
-        _audit(db, actor_id, application.user_id, "APPLICATION_REJECTED", {"application_id": application.id, "reason": reason.strip()})
+        _audit(db, actor_id, application.user_id, "APPLICATION_REJECTED", {"application_id": application.id})
         db.commit()
         return application
     except Exception:

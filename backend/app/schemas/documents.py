@@ -162,6 +162,7 @@ class DocumentVersionResponse(BaseModel):
     file_size: int
     checksum: str | None
     created_by_user_id: int
+    created_by_full_name: str
     created_at: datetime
 
 

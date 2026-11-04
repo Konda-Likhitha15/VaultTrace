@@ -1,6 +1,10 @@
 """Administrator-only dashboard, review, role, and account APIs."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import csv
+import json
+from io import StringIO
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from datetime import datetime, timezone
 from uuid import UUID
 from sqlalchemy import func, select
@@ -9,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_roles
 from app.db.session import get_db
-from app.models import AuditLog, DocumentActivity, Organization, RegistrationApplication, User
+from app.models import DocumentActivity, Organization, RegistrationApplication, User
 from app.schemas.documents import AdminDocumentPermissionResponse, AdminDocumentResponse, DocumentActivityResponse
 from app.schemas.admin import (
     AccountStatusUpdateRequest,
@@ -24,6 +28,7 @@ from app.schemas.admin import (
     OrganizationResponse,
     OrganizationAssignmentRequest,
 )
+from app.schemas.audit import AuditLogPage, AuditLogResponse, AuditQuery, AuditExportQuery, AuditSummary
 from app.services.admin import (
     AdminActionConflict,
     AdminResourceNotFound,
@@ -40,6 +45,7 @@ from app.services.admin import (
 from app.services.email import EmailDeliveryError, send_application_decision
 from app.services.document_collaboration import admin_document_activity, admin_document_metadata, admin_document_permissions, admin_revoke_permission
 from app.services.documents import DocumentNotFound
+from app.services.audit import get_audit_event, list_audit_events, record_audit_event, summarize_audit_events
 
 router = APIRouter(prefix="/admin", tags=["administration"], dependencies=[Depends(require_roles("Administrator"))])
 
@@ -80,6 +86,40 @@ def _application_response(application: RegistrationApplication) -> AdminApplicat
     )
 
 
+def _audit_response(event) -> AuditLogResponse:
+    """Build an administrator-safe audit projection from stored snapshots."""
+    actor = event.actor_user
+    return AuditLogResponse(
+        id=event.id,
+        actor_id=event.actor_id,
+        actor_email=event.actor_email or (actor.email if actor else None),
+        actor_username=event.actor_username or (actor.username if actor else None),
+        action=event.action,
+        resource_type=event.resource_type,
+        resource_id=event.resource_id,
+        organization_id=event.organization_id,
+        organization_name=event.organization.name if event.organization else None,
+        occurred_at=event.occurred_at,
+        outcome=event.outcome,
+        request_ip=event.request_ip,
+        user_agent=event.user_agent,
+        details=event.details,
+        previous_state=event.previous_state,
+        new_state=event.new_state,
+    )
+
+
+def _audit_filter_values(query: AuditQuery) -> dict[str, object]:
+    return query.model_dump(exclude_none=True)
+
+
+def _csv_cell(value: object) -> object:
+    """Neutralize spreadsheet formula prefixes in untrusted string fields."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requested user or application was not found")
 
@@ -117,7 +157,7 @@ def post_organization(payload: OrganizationCreateRequest, actor: User = Depends(
     try:
         db.add(organization)
         db.flush()
-        db.add(AuditLog(actor_id=actor.id, target_user_id=actor.id, action="ORGANIZATION_CREATED", details={"organization_id": organization.id, "name": name}))
+        record_audit_event(db, "ORGANIZATION_CREATED", actor=actor, target_user_id=actor.id, resource_type="Organization", resource_id=organization.id, organization_id=organization.id, details={"name": name})
         db.commit()
         db.refresh(organization)
         return OrganizationResponse(id=organization.id, name=organization.name, member_count=0)
@@ -141,7 +181,7 @@ def patch_user_organization(user_id: int, payload: OrganizationAssignmentRequest
     old_id = user.organization_id
     user.organization_id = payload.organization_id
     user.updated_at = datetime.now(timezone.utc)
-    db.add(AuditLog(actor_id=actor.id, target_user_id=user.id, action="USER_ORGANIZATION_CHANGED", details={"previous_organization_id": old_id, "new_organization_id": user.organization_id}))
+    record_audit_event(db, "USER_ORGANIZATION_CHANGED", actor=actor, target_user_id=user.id, resource_type="User", resource_id=user.id, organization_id=user.organization_id or old_id, details={"previous_organization_id": old_id, "new_organization_id": user.organization_id}, previous_state={"organization_id": old_id}, new_state={"organization_id": user.organization_id})
     try:
         db.commit()
         db.refresh(user)
@@ -255,6 +295,47 @@ def patch_user_status(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Account status update could not be saved. Check the database connection and retry.") from exc
 
 
+@router.get("/audit-logs/summary", response_model=AuditSummary)
+def get_audit_summary(query: AuditQuery = Depends(), db: Session = Depends(get_db)) -> AuditSummary:
+    """Return counts for the same selected period and filters as the audit table."""
+    return AuditSummary(**summarize_audit_events(db, **_audit_filter_values(query)))
+
+
+@router.get("/audit-logs/export.csv")
+def export_audit_logs(query: AuditExportQuery = Depends(), db: Session = Depends(get_db)) -> Response:
+    """Export bounded, sanitized audit fields as a UTF-8 CSV attachment."""
+    filters = query.model_dump(exclude_none=True, exclude={"max_rows"})
+    events, _total = list_audit_events(db, limit=query.max_rows, offset=0, sort_order="desc", **filters)
+    output = StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(("id", "occurred_at", "actor_id", "actor_email", "actor_username", "action", "resource_type", "resource_id", "organization_id", "organization_name", "outcome", "request_ip", "user_agent", "details", "previous_state", "new_state"))
+    for event in events:
+        writer.writerow(tuple(_csv_cell(value) for value in (event.id, event.occurred_at.isoformat(), event.actor_id or "", event.actor_email or (event.actor_user.email if event.actor_user else ""), event.actor_username or (event.actor_user.username if event.actor_user else ""), event.action, event.resource_type or "", event.resource_id or "", event.organization_id or "", event.organization.name if event.organization else "", event.outcome, event.request_ip or "", event.user_agent or "", json.dumps(event.details, ensure_ascii=False, sort_keys=True), json.dumps(event.previous_state, ensure_ascii=False, sort_keys=True) if event.previous_state is not None else "", json.dumps(event.new_state, ensure_ascii=False, sort_keys=True) if event.new_state is not None else "")))
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=vaulttrace-audit-logs.csv", "Cache-Control": "no-store"})
+
+
+@router.get("/audit-logs/{event_id}", response_model=AuditLogResponse)
+def get_audit_log_detail(event_id: int, db: Session = Depends(get_db)) -> AuditLogResponse:
+    """Return one audit event to an authenticated Administrator."""
+    event = get_audit_event(db, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Audit event not found.")
+    return _audit_response(event)
+
+
+@router.get("/audit-logs", response_model=AuditLogPage)
+def get_audit_logs(
+    query: AuditQuery = Depends(),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+) -> AuditLogPage:
+    """List filtered audit records with bounded pagination and explicit sorting."""
+    events, total = list_audit_events(db, limit=limit, offset=offset, sort_order=sort_order, **_audit_filter_values(query))
+    return AuditLogPage(items=[_audit_response(event) for event in events], total=total, limit=limit, offset=offset)
+
+
 @router.get("/documents", response_model=list[AdminDocumentResponse])
 def get_admin_document_metadata(
     search: str | None = Query(default=None, max_length=200),
@@ -266,6 +347,7 @@ def get_admin_document_metadata(
     """Search document metadata only; administrator APIs never expose file bytes."""
     documents = admin_document_metadata(db, search=search, limit=limit, offset=offset)
     db.add(DocumentActivity(actor_user_id=actor.id, action="ADMIN_DOCUMENT_METADATA_VIEWED", result="SUCCESS", details={"result_count": len(documents)}))
+    record_audit_event(db, "ADMIN_DOCUMENT_METADATA_VIEWED", actor=actor, details={"result_count": len(documents)})
     db.commit()
     return [AdminDocumentResponse(
         id=item.id,
@@ -297,6 +379,7 @@ def get_admin_document_audit(
     """Review document access and permission events for security investigations."""
     events = admin_document_activity(db, document_id=document_id, limit=limit, offset=offset)
     db.add(DocumentActivity(actor_user_id=actor.id, document_id=document_id, action="ADMIN_DOCUMENT_AUDIT_VIEWED", result="SUCCESS", details={"result_count": len(events)}))
+    record_audit_event(db, "ADMIN_DOCUMENT_AUDIT_VIEWED", actor=actor, resource_type="Document" if document_id else None, resource_id=document_id, details={"result_count": len(events)})
     db.commit()
     return [DocumentActivityResponse(
         id=event.id,
@@ -321,6 +404,7 @@ def get_admin_document_permissions(
     """Review current and historical grants without exposing document bytes."""
     permissions = admin_document_permissions(db, document_id=document_id, limit=limit, offset=offset)
     db.add(DocumentActivity(actor_user_id=actor.id, action="ADMIN_DOCUMENT_PERMISSIONS_VIEWED", result="SUCCESS", details={"result_count": len(permissions)}))
+    record_audit_event(db, "ADMIN_DOCUMENT_PERMISSIONS_VIEWED", actor=actor, resource_type="Document" if document_id else None, resource_id=document_id, details={"result_count": len(permissions)})
     db.commit()
     return [AdminDocumentPermissionResponse(
         id=permission.id,

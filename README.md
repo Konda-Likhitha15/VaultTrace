@@ -418,6 +418,25 @@ Account changes are persisted with an additive `users.updated_at` column (Alembi
 
 The older compatibility endpoints `POST /auth/otp/request`, `/auth/otp/resend`, and `/auth/otp/verify` are also present. New clients should use the purpose-specific signup endpoints above.
 
+### Commit 4 — Audit Trail
+
+The Administrator workspace has a dedicated **Audit Trail** route at `/admin/audit-trail`. It loads summary counts and paginated events from PostgreSQL, supports actor, organization, action, outcome, date, resource, and text filters, opens an event detail dialog, and exports a bounded CSV. It shows loading, empty, error, and export feedback states. The navigation item is present only in the Administrator layout, and `ProtectedAdmin` redirects non-administrators; the API independently enforces the Administrator role.
+
+The application writes audit rows through `app.services.audit.record_audit_event()`. Supported recorded events include bootstrap administrator creation, successful/failed login, logout, password reset, account registration and administrator approval/rejection, user role/status and organization changes, document upload/download/preview/version upload/metadata change/soft delete/restore, permission grant/change/revocation, and authenticated document access denials. Events are committed with the operation where the service transaction supports it. Failed-login events contain the attempted email but never the submitted password. Audit metadata removes sensitive-key values such as passwords, OTPs, tokens, storage keys and URLs. The existing `document_activities` store remains the source for the per-document activity view; `audit_logs` is the global admin-facing record.
+
+Administrator-only endpoints (all under `/api/v1`):
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /admin/audit-logs` | Paginated, sorted audit events. Filters: `user_id`, `resource_id`, `action`, `outcome`, `organization_id`, `date_from`, `date_to`, and `search`; pagination uses `limit` (1–100) and `offset`. |
+| `GET /admin/audit-logs/{event_id}` | One safe event projection. |
+| `GET /admin/audit-logs/summary` | Event, success, failure, and distinct actor counts for the supplied filters/date period. |
+| `GET /admin/audit-logs/export.csv` | CSV export, default maximum 5,000 and hard maximum 10,000 matching events; formula-prefixed spreadsheet cells are escaped. |
+
+Audit records have no application update/delete API. They are ordinary PostgreSQL rows, not cryptographically tamper-evident: database administrators or compromised database credentials can still alter them. Revision `20261105_0010` additively extends existing `audit_logs` fields and indexes; it does not recreate the table or delete prior rows. After reviewing and backing up the intended database, apply it with `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head` (Windows PowerShell: set `$env:PYTHONPATH = "backend"` and run `likitha\Scripts\alembic.exe -c backend\alembic.ini upgrade head`, adjusted to the virtual environment path). Downgrade refuses when anonymous audit events exist because reverting would violate the prior non-null actor constraints.
+
+The Administrator API requires a bearer token. Missing/invalid tokens return HTTP 401 and other roles return HTTP 403. Owners, Editors (where represented as a role), and Viewers have no read, export, update, or delete access to these routes. Their document-level activity remains subject to the existing document authorization rules.
+
 ## 14. Authentication and Authorization Details
 
 - Passwords are stored as Argon2 hashes using `pwdlib`; plaintext passwords are not persisted.
@@ -453,6 +472,8 @@ Access is deny-by-default. An owner can share a document only with an active, ve
 | `GET /documents/{document_id}/activity`, `POST /documents/{document_id}/restore`, `DELETE /documents/{document_id}` | Actual owner reviews activity, restores, or soft-deletes. Stored bytes remain private after soft-delete. |
 | `GET /admin/documents`, `/admin/documents/permissions`, `/admin/documents/audit`, `DELETE /admin/documents/permissions/{permission_id}` | Administrator-only metadata/permission/audit review and emergency permission revocation; these routes do not return file bytes. |
 | `GET/POST /admin/organizations`, `PATCH /admin/users/{user_id}/organization` | Administrator-only organization listing/creation and explicit user assignment (`{"organization_id": 7}`) or unassignment (`null`). |
+
+The initial upload is recorded as V1. The version list includes uploader name, original filename, timestamp, and stored file size, ordered newest first. A document with one version shows V1 and a single-version message; a genuinely empty version query shows an empty state. Version list and download requests recheck current READ permission, including grant expiry and revocation. A backend connection failure remains a visible network error and is not treated as an empty history.
 
 Example:
 

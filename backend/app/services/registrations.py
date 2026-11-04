@@ -11,6 +11,7 @@ from app.models import EmailVerification, OtpChallenge, RegistrationApplication,
 from app.schemas.auth import RegistrationRequest
 from app.services.otp import OtpExpired, OtpNotVerified
 from app.services.email_verifications import SignupProofRequired, _aware
+from app.services.audit import record_audit_event
 
 
 class RegistrationConflict(Exception):
@@ -70,6 +71,7 @@ def create_registration_application(db: Session, request: RegistrationRequest) -
             db.flush()
             application = RegistrationApplication(user_id=user.id, email_verified=True, approval_status="PENDING")
             db.add(application)
+            record_audit_event(db, "USER_REGISTERED", actor=user, target_user_id=user.id, resource_type="User", resource_id=user.id, details={"account_status": "PENDING", "email_verified": True})
             if proof is not None:
                 proof.user_id = user.id
             elif challenge is not None:

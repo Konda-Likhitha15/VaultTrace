@@ -68,6 +68,12 @@ def test_private_read_and_download_are_denied_until_grant_then_revoked_immediate
             with pytest.raises(HTTPException) as hidden_download:
                 document_api.get_document_download(document_id, request, viewer, db, lambda _provider: MemoryStorage(storage_objects))
             assert hidden_download.value.status_code == 404
+            with pytest.raises(HTTPException) as hidden_versions:
+                document_api.get_document_versions(document_id, viewer, db)
+            assert hidden_versions.value.status_code == 404
+            with pytest.raises(HTTPException) as missing_versions:
+                document_api.get_document_versions(uuid.uuid4(), owner, db)
+            assert missing_versions.value.status_code == 404
 
             grant = document_api.post_document_permission(
                 document_id,
@@ -77,6 +83,12 @@ def test_private_read_and_download_are_denied_until_grant_then_revoked_immediate
                 db,
             )
             assert grant.permission_level == "READ"
+            versions = document_api.get_document_versions(document_id, viewer, db)
+            assert len(versions) == 1
+            assert versions[0].version_number == 1
+            assert versions[0].original_filename == "route-test.pdf"
+            assert versions[0].created_by_full_name == "API Owner"
+            assert versions[0].file_size == len(content)
             provider = MemoryStorage(storage_objects)
             authorized = document_api.get_document_download(document_id, request, viewer, db, lambda _provider: provider)
             assert authorized.status_code == 200

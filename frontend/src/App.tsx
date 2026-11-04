@@ -17,6 +17,7 @@ import { SharedWithMePage } from './pages/SharedWithMePage';
 import { SharedByMePage } from './pages/SharedByMePage';
 import { DeletedDocumentsPage } from './pages/DeletedDocumentsPage';
 import { AdminDocumentsPage } from './pages/AdminDocumentsPage';
+import { AdminAuditTrailPage } from './pages/AdminAuditTrailPage';
 import { UserLayout } from './components/UserLayout';
 
 function homeForRole(role: string): string {
@@ -84,6 +85,7 @@ export default function App() {
         <Route path="accounts" element={<AdminUsersPage mode="accounts" />} />
         <Route path="applications" element={<AdminApplicationsPage />} />
         <Route path="documents" element={<AdminDocumentsPage />} />
+        <Route path="audit-trail" element={<AdminAuditTrailPage />} />
       </Route>
       <Route path="/owner/dashboard" element={<ProtectedDashboard />} />
       <Route path="/viewer/dashboard" element={<ProtectedDashboard />} />

@@ -59,6 +59,29 @@ export type AdminApplication = {
 
 export type AdminActionResponse = { message: string; notification_sent: boolean | null };
 
+export type AuditEvent = {
+  id: number;
+  actor_id: number | null;
+  actor_email: string | null;
+  actor_username: string | null;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  organization_id: number | null;
+  organization_name: string | null;
+  occurred_at: string;
+  outcome: 'SUCCESS' | 'FAILURE';
+  request_ip: string | null;
+  user_agent: string | null;
+  details: Record<string, unknown>;
+  previous_state: Record<string, unknown> | null;
+  new_state: Record<string, unknown> | null;
+};
+
+export type AuditLogPage = { items: AuditEvent[]; total: number; limit: number; offset: number };
+export type AuditSummary = { total_events: number; successful_operations: number; failed_operations: number; active_users: number };
+export type AuditFilters = { user_id?: number; action?: string; search?: string; outcome?: 'SUCCESS' | 'FAILURE'; date_from?: string; date_to?: string; resource_id?: string; organization_id?: number };
+
 export type DocumentMetadata = {
   id: string;
   document_name: string;
@@ -104,6 +127,7 @@ export type DocumentVersion = {
   file_size: number;
   checksum: string | null;
   created_by_user_id: number;
+  created_by_full_name: string;
   created_at: string;
 };
 

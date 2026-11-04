@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.models import Document, DocumentActivity, DocumentPermission, DocumentVersion, User
 from app.services.document_validation import DocumentValidationError, validate_upload
+from app.services.audit import record_audit_event
 from app.services.documents import (
     DocumentConflict,
     DocumentNotFound,
@@ -49,7 +50,7 @@ def _valid_expiration(value: datetime | None) -> datetime | None:
 
 def _require_owner(db: Session, user_id: int, document_id: UUID) -> None:
     """Require the actual document owner, never a delegated legacy OWNER grant."""
-    validate_document_ownership(db, user_id, document_id)
+    validate_document_ownership(db, user_id, document_id, operation="MANAGE_PERMISSIONS")
 
 
 def list_permissions(db: Session, user_id: int, document_id: UUID) -> list[DocumentPermission]:
@@ -66,7 +67,7 @@ def list_permissions(db: Session, user_id: int, document_id: UUID) -> list[Docum
 
 def eligible_share_users(db: Session, user_id: int, document_id: UUID, search: str) -> list[User]:
     """Search active, verified accounts only inside the owner's organization."""
-    document = validate_document_ownership(db, user_id, document_id)
+    document = validate_document_ownership(db, user_id, document_id, operation="READ")
     owner = db.get(User, document.owner_id)
     if owner is None or owner.organization_id is None:
         return []
@@ -153,6 +154,7 @@ def grant_permission(
             user_agent=user_agent,
             details={"permission_id": permission.id, "recipient_user_id": recipient.id, "previous_permission": old_level, "new_permission": permission_level, "expires_at": expiration.isoformat() if expiration else None},
         ))
+        record_audit_event(db, "PERMISSION_GRANTED", actor=db.get(User, user_id), target_user_id=recipient.id, resource_type="Document", resource_id=document_id, organization_id=owner.organization_id, request_ip=request_ip, user_agent=user_agent, details={"permission_id": permission.id, "permission_level": permission_level, "expires_at": expiration.isoformat() if expiration else None}, previous_state={"permission_level": old_level} if old_level else None, new_state={"permission_level": permission_level})
         db.commit()
         db.refresh(permission)
         return permission
@@ -203,6 +205,7 @@ def update_permission(
         user_agent=user_agent,
         details={"recipient_user_id": permission.granted_to_user_id, "previous_permission": old_level, "new_permission": permission.permission_level, "previous_expiration": old_expiration.isoformat() if old_expiration else None, "new_expiration": permission.expires_at.isoformat() if permission.expires_at else None},
     ))
+    record_audit_event(db, "PERMISSION_MODIFIED", actor=db.get(User, user_id), target_user_id=permission.granted_to_user_id, resource_type="Document", resource_id=document_id, organization_id=db.get(Document, document_id).owner.organization_id, request_ip=request_ip, user_agent=user_agent, details={"permission_id": permission.id}, previous_state={"permission_level": old_level, "expires_at": old_expiration.isoformat() if old_expiration else None}, new_state={"permission_level": permission.permission_level, "expires_at": permission.expires_at.isoformat() if permission.expires_at else None})
     db.commit()
     db.refresh(permission)
     return permission
@@ -230,6 +233,8 @@ def revoke_permission(db: Session, user_id: int, document_id: UUID, permission_i
         user_agent=user_agent,
         details={"permission_id": permission.id, "recipient_user_id": permission.granted_to_user_id, "permission_level": permission.permission_level},
     ))
+    document = db.get(Document, document_id)
+    record_audit_event(db, "PERMISSION_REVOKED", actor=db.get(User, user_id), target_user_id=permission.granted_to_user_id, resource_type="Document", resource_id=document_id, organization_id=document.owner.organization_id if document else None, request_ip=request_ip, user_agent=user_agent, details={"permission_id": permission.id, "permission_level": permission.permission_level})
     db.commit()
 
 
@@ -261,6 +266,7 @@ def update_document_metadata(db: Session, user_id: int, document_id: UUID, chang
         setattr(document, field, value)
     document.updated_at = _now()
     db.add(DocumentActivity(document_id=document_id, actor_user_id=user_id, action="DOCUMENT_METADATA_UPDATED", result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={"previous": previous, "new": allowed}))
+    record_audit_event(db, "DOCUMENT_METADATA_UPDATED", actor=db.get(User, user_id), target_user_id=document.owner_id, resource_type="Document", resource_id=document_id, organization_id=document.owner.organization_id, request_ip=request_ip, user_agent=user_agent, details={"changed_fields": sorted(allowed)}, previous_state={"fields": sorted(previous)}, new_state={"fields": sorted(allowed)})
     db.commit()
     db.refresh(document)
     return document
@@ -316,6 +322,7 @@ def upload_document_version(
     document.updated_at = _now()
     db.add(version)
     db.add(DocumentActivity(document_id=document_id, actor_user_id=user_id, action="DOCUMENT_VERSION_CREATED", result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={"version_number": version_number, "checksum": validated.checksum}))
+    record_audit_event(db, "DOCUMENT_VERSION_UPLOADED", actor=db.get(User, user_id), target_user_id=document.owner_id, resource_type="Document", resource_id=document_id, organization_id=document.owner.organization_id, request_ip=request_ip, user_agent=user_agent, details={"version_number": version_number, "file_size": validated.size})
     try:
         db.commit()
         db.refresh(version)
@@ -347,6 +354,8 @@ def download_version(db: Session, storage_factory: StorageProviderFactory, user_
         if version.checksum and not hmac.compare_digest(hashlib.sha256(content).hexdigest(), version.checksum):
             raise DocumentPersistenceError("Stored document integrity check failed.")
         db.add(DocumentActivity(document_id=document_id, actor_user_id=user_id, action=action, result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={"version_number": version.version_number}))
+        document = db.get(Document, document_id)
+        record_audit_event(db, action, actor=db.get(User, user_id), target_user_id=document.owner_id if document else None, resource_type="Document", resource_id=document_id, organization_id=document.owner.organization_id if document else None, request_ip=request_ip, user_agent=user_agent, details={"version_number": version.version_number, "file_size": version.file_size})
         db.commit()
         return version, content
     finally:
@@ -451,4 +460,6 @@ def admin_revoke_permission(db: Session, actor_id: int, permission_id: int, *, r
         user_agent=user_agent,
         details={"permission_id": permission.id, "recipient_user_id": permission.granted_to_user_id, "permission_level": permission.permission_level, "administrative_action": True},
     ))
+    document = db.get(Document, permission.document_id)
+    record_audit_event(db, "PERMISSION_REVOKED", actor=db.get(User, actor_id), target_user_id=permission.granted_to_user_id, resource_type="Document", resource_id=permission.document_id, organization_id=document.owner.organization_id if document else None, request_ip=request_ip, user_agent=user_agent, details={"permission_id": permission.id, "administrative_action": True})
     db.commit()

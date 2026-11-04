@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AdminActionResponse, AdminApplication, AdminOverview, AdminUser, DocumentActivity, DocumentFilters, DocumentMetadata, DocumentPermission, DocumentSearchResult, DocumentVersion, EligibleShareUser, Organization, SharedByMe, SharedDocument, TokenResponse, User } from '../types';
+import type { AdminActionResponse, AdminApplication, AdminOverview, AdminUser, AuditFilters, AuditLogPage, AuditSummary, DocumentActivity, DocumentFilters, DocumentMetadata, DocumentPermission, DocumentSearchResult, DocumentVersion, EligibleShareUser, Organization, SharedByMe, SharedDocument, TokenResponse, User } from '../types';
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8000/api/v1';
 export const api = axios.create({ baseURL: configuredBaseUrl.replace(/\/+$/, ''), timeout: 30_000 });
@@ -91,6 +91,18 @@ function authHeaders(token: string) {
 
 export async function getAdminOverview(token: string): Promise<AdminOverview> {
   return (await api.get('/admin/dashboard', authHeaders(token))).data as AdminOverview;
+}
+
+export async function getAuditLogs(token: string, filters: AuditFilters, offset: number, limit = 25): Promise<AuditLogPage> {
+  return (await api.get('/admin/audit-logs', { ...authHeaders(token), params: { ...filters, offset, limit, sort_order: 'desc' } })).data as AuditLogPage;
+}
+
+export async function getAuditSummary(token: string, filters: AuditFilters): Promise<AuditSummary> {
+  return (await api.get('/admin/audit-logs/summary', { ...authHeaders(token), params: filters })).data as AuditSummary;
+}
+
+export async function exportAuditLogs(token: string, filters: AuditFilters): Promise<Blob> {
+  return (await api.get('/admin/audit-logs/export.csv', { ...authHeaders(token), params: filters, responseType: 'blob' })).data as Blob;
 }
 
 export async function getAdminUsers(token: string): Promise<AdminUser[]> {

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models import Document, DocumentActivity, DocumentPermission, DocumentVersion, Role, User
 from app.services.document_validation import DocumentValidationError, MIME_BY_EXTENSION, validate_upload
+from app.services.audit import record_audit_event
 from app.services.storage import StorageService
 
 StorageProviderFactory = Callable[[str], StorageService]
@@ -130,6 +131,7 @@ def upload_document(
             user_agent=user_agent,
             details={"version_number": 1, "visibility": visibility},
         ))
+        record_audit_event(db, "DOCUMENT_UPLOADED", actor=user, target_user_id=user.id, resource_type="Document", resource_id=document_id, organization_id=user.organization_id, details={"version_number": 1, "file_size": validated.size})
         db.commit()
         db.refresh(document)
     except SQLAlchemyError as exc:
@@ -207,22 +209,23 @@ def download_document(
         if document.checksum and not hmac.compare_digest(hashlib.sha256(content).hexdigest(), document.checksum):
             raise DocumentPersistenceError("Stored document integrity check failed.")
         db.add(DocumentActivity(document_id=document.id, actor_user_id=owner_id, action=action, result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={"version_number": document.current_version}))
+        record_audit_event(db, action, actor=db.get(User, owner_id), resource_type="Document", resource_id=document.id, organization_id=document.owner.organization_id, request_ip=request_ip, user_agent=user_agent, details={"version_number": document.current_version, "file_size": document.file_size})
         db.commit()
         return document, content
     finally:
         _close_storage_provider(storage)
 
 
-def get_accessible_document(db: Session, user_id: int, document_id: UUID, *, include_deleted: bool = False) -> tuple[Document, str]:
+def get_accessible_document(db: Session, user_id: int, document_id: UUID, *, include_deleted: bool = False, operation: str = "READ") -> tuple[Document, str]:
     """Resolve current owner/grant state from PostgreSQL on every protected request."""
     user = db.get(User, user_id)
     document = db.get(Document, document_id)
     if user is None or not user.is_active or user.account_status != "ACTIVE":
         if user is not None:
-            _record_access_denied(db, user_id, document_id, document)
+            _record_access_denied(db, user_id, document_id, document, operation)
         raise DocumentNotFound
     if document is None or (document.deleted_at is not None and not include_deleted):
-        _record_access_denied(db, user_id, document_id, document)
+        _record_access_denied(db, user_id, document_id, document, operation)
         raise DocumentNotFound
     if document.owner_id == user_id:
         return document, "OWNER"
@@ -241,7 +244,7 @@ def get_accessible_document(db: Session, user_id: int, document_id: UUID, *, inc
     )
     if document.visibility != "PRIVATE" and grant is not None and same_organization:
         return document, grant.permission_level
-    _record_access_denied(db, user_id, document_id, document)
+    _record_access_denied(db, user_id, document_id, document, operation)
     raise DocumentNotFound
 
 
@@ -259,7 +262,7 @@ def require_document_permission(
     delegated full-control permission for backward compatibility. Only OWNER
     can delete, restore, manage grants, or view the per-document audit history.
     """
-    document, access_level = get_accessible_document(db, user_id, document_id, include_deleted=include_deleted)
+    document, access_level = get_accessible_document(db, user_id, document_id, include_deleted=include_deleted, operation=operation)
     allowed = {
         "READ": {"OWNER", "VIEWER", "EDITOR", "READ", "EDIT"},
         "EDIT": {"EDITOR", "OWNER", "EDIT"},
@@ -271,7 +274,7 @@ def require_document_permission(
     if allowed is None:
         raise ValueError(f"Unknown document operation: {operation}")
     if access_level not in allowed:
-        _record_access_denied(db, user_id, document_id, document)
+        _record_access_denied(db, user_id, document_id, document, operation)
         db.add(DocumentActivity(document_id=document_id, actor_user_id=user_id, action=f"DOCUMENT_{operation}_DENIED", result="DENIED", details={"operation": operation}))
         try:
             db.commit()
@@ -279,7 +282,7 @@ def require_document_permission(
             db.rollback()
         raise DocumentPermissionDenied
     if operation in {"DELETE", "RESTORE", "MANAGE_PERMISSIONS", "READ_AUDIT"}:
-        validate_document_ownership(db, user_id, document_id, include_deleted=include_deleted)
+        validate_document_ownership(db, user_id, document_id, include_deleted=include_deleted, operation=operation)
     audit_action = {"READ": "DOCUMENT_READ_ALLOWED", "EDIT": "DOCUMENT_EDIT_ALLOWED", "DELETE": "DOCUMENT_DELETE_ALLOWED"}.get(operation)
     if audit_action:
         db.add(DocumentActivity(document_id=document_id, actor_user_id=user_id, action=audit_action, result="SUCCESS", details={"operation": operation}))
@@ -296,11 +299,12 @@ def validate_document_ownership(
     document_id: UUID,
     *,
     include_deleted: bool = False,
+    operation: str = "OWNERSHIP",
 ) -> Document:
     """Require actual ownership; delegated permissions never transfer ownership."""
     document = db.get(Document, document_id)
     if document is None or document.owner_id != user_id or (document.deleted_at is not None and not include_deleted):
-        _record_access_denied(db, user_id, document_id, document)
+        _record_access_denied(db, user_id, document_id, document, operation)
         raise DocumentNotFound
     return document
 
@@ -341,7 +345,7 @@ def can_manage_permissions(db: Session, user_id: int, document_id: UUID) -> bool
         return False
 
 
-def _record_access_denied(db: Session, user_id: int, document_id: UUID, document: Document | None) -> None:
+def _record_access_denied(db: Session, user_id: int, document_id: UUID, document: Document | None, operation: str = "READ") -> None:
     """Record denial without disclosing document existence to the caller."""
     db.add(DocumentActivity(
         document_id=document.id if document is not None else None,
@@ -350,11 +354,14 @@ def _record_access_denied(db: Session, user_id: int, document_id: UUID, document
         result="DENIED",
         details={"requested_document_id": str(document_id)},
     ))
+    actor = db.get(User, user_id)
+    record_audit_event(db, f"DOCUMENT_{operation}_DENIED", actor=actor, resource_type="Document", resource_id=document_id, organization_id=document.owner.organization_id if document is not None else (actor.organization_id if actor else None), outcome="FAILURE", details={"operation": operation})
     try:
         db.commit()
     except SQLAlchemyError:
         db.rollback()
         logger.warning("Could not persist a document access-denied event.")
+        raise
 
 
 def get_authorized_documents(db: Session, user_id: int, *, search: str | None = None, category: str | None = None, file_type: str | None = None, owner_id: int | None = None, visibility: str | None = None, access_status: str | None = None, date_from: date | None = None, date_to: date | None = None, limit: int = 50, offset: int = 0, sort_by: str = "created_at", sort_order: str = "desc") -> list[Document]:
@@ -420,6 +427,7 @@ def soft_delete_document(db: Session, user: User, document_id: UUID, *, request_
         grant.revoked_at = document.deleted_at
         grant.revoked_by_user_id = user.id
     db.add(DocumentActivity(document_id=document.id, actor_user_id=user.id, action="DOCUMENT_DELETED", result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={}))
+    record_audit_event(db, "DOCUMENT_DELETED", actor=user, target_user_id=document.owner_id, resource_type="Document", resource_id=document.id, organization_id=user.organization_id)
     db.commit()
 
 
@@ -430,6 +438,7 @@ def restore_document(db: Session, user: User, document_id: UUID, *, request_ip: 
         raise DocumentConflict("Document is not deleted.")
     document.deleted_at = None
     db.add(DocumentActivity(document_id=document.id, actor_user_id=user.id, action="DOCUMENT_RESTORED", result="SUCCESS", request_ip=request_ip, user_agent=user_agent, details={}))
+    record_audit_event(db, "DOCUMENT_RESTORED", actor=user, target_user_id=document.owner_id, resource_type="Document", resource_id=document.id, organization_id=user.organization_id)
     db.commit()
     return document
 

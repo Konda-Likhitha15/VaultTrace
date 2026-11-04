@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.models import EmailVerification, PasswordResetAuthorization, User
 from app.services.email import EmailDeliveryError, send_otp_email
+from app.services.audit import record_audit_event
 
 
 class VerificationError(Exception):
@@ -231,5 +232,6 @@ def reset_password(db: Session, authorization: str, password: str) -> None:
                 EmailVerification.purpose == "PASSWORD_RESET",
                 EmailVerification.is_used.is_(False),
             ).update({EmailVerification.is_used: True}, synchronize_session=False)
+            record_audit_event(db, "AUTH_PASSWORD_RESET_COMPLETED", actor=user, resource_type="User", resource_id=user.id, details={"sessions_revoked": True})
     if expired:
         raise VerificationExpired

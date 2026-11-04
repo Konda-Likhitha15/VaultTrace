@@ -1,6 +1,6 @@
 """Version one API route aggregation and authentication endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,6 +14,7 @@ from app.services.auth import InvalidCredentials, revoke_access_token, authentic
 from app.services.email import EmailDeliveryError
 from app.services.otp import OtpCooldown, OtpExpired, OtpInvalid, OtpNotVerified, OtpRateLimited, request_otp, verify_otp
 from app.services.registrations import RegistrationConflict, create_registration_application
+from app.services.audit import record_audit_event
 from app.services.email_verifications import VerificationCooldown, VerificationExpired, VerificationInvalid, VerificationRateLimited, create_reset_authorization, reset_password, send_verification_otp, verify_verification_otp
 from app.core.config import settings
 
@@ -103,6 +104,7 @@ def finish_password_reset(payload: PasswordResetRequest, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="Password reset authorization expired") from exc
     except VerificationInvalid as exc:
         raise HTTPException(status_code=400, detail="Password reset authorization is invalid or already used") from exc
+    # reset_password records the event in the same transaction as the hash update.
     return OtpResponse(message="Password reset successfully. Please sign in again.")
 
 
@@ -133,19 +135,26 @@ def register(payload: RegistrationRequest, db: Session = Depends(get_db)) -> Reg
 
 
 @auth_router.post("/login", response_model=TokenResponse)
-def login(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse:
+def login(payload: Credentials, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
     """Authenticate a user and issue a short-lived bearer token."""
     try:
         user, token, expiry = authenticate_user(db, payload)
     except InvalidCredentials as exc:
+        record_audit_event(db, "AUTH_LOGIN_FAILED", actor_email=str(payload.email).strip().lower(), resource_type="Authentication", outcome="FAILURE", request=request)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password", headers={"WWW-Authenticate": "Bearer"}) from exc
+    record_audit_event(db, "AUTH_LOGIN_SUCCEEDED", actor=user, resource_type="Authentication", resource_id=user.id, request=request)
+    db.commit()
     return TokenResponse(access_token=token, expires_at=expiry, user=public_user(user))
 
 
 @auth_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(claims: dict = Depends(get_token_claims), db: Session = Depends(get_db)) -> Response:
+def logout(request: Request, claims: dict = Depends(get_token_claims), db: Session = Depends(get_db)) -> Response:
     """Revoke the current bearer token."""
     revoke_access_token(db, claims)
+    actor = db.get(User, int(str(claims["sub"])))
+    record_audit_event(db, "AUTH_LOGOUT", actor=actor, resource_type="Authentication", resource_id=actor.id if actor else None, request=request)
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

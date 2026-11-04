@@ -27,6 +27,10 @@ async function mockLogin(page: Page, role: 'Administrator' | 'Owner' | 'Viewer')
       await route.fulfill({ json: user });
     } else if (url.pathname.endsWith('/admin/dashboard')) {
       await route.fulfill({ json: dashboardCounts });
+    } else if (url.pathname.endsWith('/admin/audit-logs/summary')) {
+      await route.fulfill({ json: { total_events: 0, successful_operations: 0, failed_operations: 0, active_users: 0 } });
+    } else if (url.pathname.endsWith('/admin/audit-logs')) {
+      await route.fulfill({ json: { items: [], total: 0, limit: 25, offset: 0 } });
     } else if (url.pathname.endsWith('/documents/')) {
       await route.fulfill({ json: [] });
     } else {
@@ -46,6 +50,11 @@ test('administrator sees administrator navigation', async ({ page }) => {
   await expect(navigation.getByRole('link', { name: 'All users' })).toBeVisible();
   await expect(navigation.getByRole('link', { name: 'Applications' })).toBeVisible();
   await expect(navigation.getByRole('link', { name: 'Documents & audit' })).toBeVisible();
+  await expect(navigation.getByRole('link', { name: 'Audit Trail' })).toBeVisible();
+  await navigation.getByRole('link', { name: 'Audit Trail' }).click();
+  await expect(page).toHaveURL(/\/admin\/audit-trail$/);
+  await expect(page.getByRole('heading', { name: 'Audit Trail' })).toBeVisible();
+  await expect(page.getByText('No audit events match these filters.')).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'User navigation' })).toHaveCount(0);
 });
 
@@ -57,11 +66,12 @@ test('owner sees document controls and cannot open admin routes directly', async
   await expect(navigation.getByRole('link', { name: 'Upload documents' })).toBeVisible();
   await expect(navigation.getByRole('link', { name: 'Search documents' })).toBeVisible();
   await page.evaluate(() => {
-    window.history.pushState({}, '', '/admin/accounts');
+    window.history.pushState({}, '', '/admin/audit-trail');
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
   await expect(page).toHaveURL(/\/owner\/dashboard$/);
   await expect(page.getByRole('navigation', { name: 'Admin navigation' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'User navigation' }).getByRole('link', { name: 'Audit Trail' })).toHaveCount(0);
 });
 
 test('viewer sees authorized document navigation without upload controls', async ({ page }) => {
@@ -76,6 +86,11 @@ test('viewer sees authorized document navigation without upload controls', async
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
   await expect(page).toHaveURL(/\/documents$/);
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/admin/audit-trail');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect(page).toHaveURL(/\/viewer\/dashboard$/);
 });
 
 test('owner upload, search and categories routes render distinct pages', async ({ page }) => {

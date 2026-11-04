@@ -92,6 +92,8 @@ def test_admin_bootstrap_creates_once_and_never_resets_existing_account(client: 
     with TestSession() as session:
         admin = session.scalar(select(User).where(User.email == "bootstrap@example.com"))
         assert admin is not None and admin.role.name == "Administrator"
+        bootstrap_event = session.scalar(select(AuditLog).where(AuditLog.action == "ADMIN_BOOTSTRAPPED", AuditLog.target_user_id == admin.id))
+        assert bootstrap_event is not None and bootstrap_event.actor_id is None and bootstrap_event.outcome == "SUCCESS"
         original_hash = admin.password_hash
         assert admin.email_verified and admin.account_status == "ACTIVE"
     monkeypatch.setattr(settings, "admin_bootstrap_password", "replacement-admin-password")

@@ -304,3 +304,96 @@ The database migration must only be applied after checking that the intended Pos
 - Run the live registration/login/document workflow with PostgreSQL and selected storage provider; verify actual bytes/metadata/grant/revocation/audit persistence. Supabase still requires valid backend-only credentials and a private bucket.
 - Diagnose the existing ASGI/auth test hang and rerun the complete `pytest -v` suite. Browser/E2E verification also remains outstanding.
 - No commit, push, deployment, or Commit 4 work was performed.
+
+## Follow-up — empty version history display
+
+- Changed `frontend/src/pages/DocumentsPage.tsx` so a successful empty versions response displays a clear “No version history is available” state instead of an empty list. Request failures still use the API error message.
+- `cd frontend && npm run build` — passed (strict TypeScript and Vite production build; 117 modules).
+- Live API/PostgreSQL state was not available from the isolated tool session during this follow-up. The user later confirmed PostgreSQL accepted connections and Alembic was at `20261104_0009`; the user's Uvicorn `/health` response was `{"status":"ok"}`. No migration or database change was made in this follow-up.
+
+## Follow-up — version history V1 display and connection diagnosis
+
+### Implemented
+
+- Kept the existing authenticated `GET /api/v1/documents/{document_id}/versions` endpoint and centralized READ authorization. Version downloads continue to re-check READ authorization and bind the version ID to its document ID. Revoked and expired permissions are evaluated from current database state.
+- Added the uploader's database-backed full name to version response metadata; no storage key or URL is returned.
+- Updated `frontend/src/pages/DocumentsPage.tsx` to show a loading state, sort versions newest-first, identify the current version, display filename/uploader/date/size, provide authorized download buttons, and show the exact one-version message. A genuinely empty result remains an empty state; it is not represented as a request failure.
+- Confirmed upload service creates V1 on initial upload. Existing migration `20261104_0008` backfills V1 metadata for existing documents; no migration or data rewrite was needed.
+- Added regression checks for V1 metadata, multiple-version order, current and historical downloads, empty history, unauthorized and missing document access, READ-authorized listing, and post-revocation denial.
+- No changes to `.env`, PostgreSQL, storage providers, authentication, or folder structure.
+
+### API connectivity diagnosis
+
+- `backend/app/main.py` exposes `GET /health`; the FastAPI app includes the versioned API router under `/api/v1`.
+- Frontend base URL defaults to `http://localhost:8000/api/v1` (`VITE_API_BASE_URL` can override it). `getDocumentVersions()` calls `/documents/{id}/versions` and uses the shared bearer `authHeaders(token)` helper.
+- `apiErrorMessage()` distinguishes an Axios response with an HTTP status from a request with no response. It reports no response only when the browser receives none; it does not convert authorization or API status errors into network failures.
+- In this execution environment, `curl --max-time 3 -i http://127.0.0.1:8000/health` failed with curl exit 7 / connection refused. Therefore the actual no-response root cause observed here is no backend listener on port 8000. No live API/database workflow could be verified in this environment.
+
+### Validation executed
+
+- `PYTHONPATH=.:backend likitha/bin/pytest -q backend/tests/test_documents.py backend/tests/test_document_authorization_api.py` — **25 passed**.
+- `cd frontend && npm run build` — **passed** (`tsc --noEmit`, Vite production build; 117 modules).
+- `timeout 90s env PYTHONPATH=.:backend likitha/bin/pytest -v` — **incomplete, timed out (exit 124)** while waiting at existing `backend/tests/test_auth_api.py::test_otp_signup_pending_then_admin_approval_and_login`. Earlier tests shown before the hang passed; this is not a full-suite pass.
+- `git diff --check` — **passed**.
+
+### Remaining verification
+
+- Start FastAPI and verify `/health`, then exercise version history and downloads against the configured PostgreSQL/storage environment. The API process was not running during this check, and no database or migration was changed.
+- Diagnose the existing full-suite auth/in-process request hang, then rerun `pytest -v` to completion.
+
+# Commit 4 — Audit Trail and Administrator Dashboard (2026-11-05)
+
+## Prompt summary
+
+Extend the existing VaultTrace app with a centralized, privacy-filtered audit event service and administrator-only audit APIs/dashboard. Preserve Commit 1–3 behavior, database rows, folder structure, and current per-document activity. Record supported authentication, registration/admin, document, permission, and access-denial operations. Add filtered/paginated event listing, detail, summary, CSV export, role protection, UI navigation, tests, and documentation. Do not commit, deploy, or start later commits.
+
+## Implemented
+
+- Extended existing `AuditLog` with nullable actor/target identities, actor email/username snapshots, resource/organization identifiers, outcome, IP/user-agent, and previous/new state summaries; added indexes and an outcome constraint.
+- Added `record_audit_event()` with bounded JSON sanitization that omits sensitive-key fields, safe IP parsing, and bounded/redacted user-agent values. Event writes join the associated business transaction where available. Global audit events cover bootstrap-admin creation, successful/failed login, logout, password-reset completion, signup, admin approval/rejection, role/status and organization changes, document upload/download/preview/metadata/version/delete/restore, permission grant/change/revoke, and authenticated document access denials. Existing `document_activities` remains the per-document timeline.
+- Added admin-only event list/detail/summary/CSV APIs with actor/resource/action/outcome/organization/date/text filters, pagination/sorting, and 5,000 default / 10,000 maximum CSV export. No update/delete audit API exists. CSV cells with spreadsheet formula prefixes are escaped.
+- Added responsive `/admin/audit-trail` page with actual API data, cards, filters, pagination, event details, CSV export and loading/empty/error/export feedback. Added Administrator navigation; the existing `/admin` route guard still restricts direct URL access.
+- Added regression tests in `backend/tests/test_audit_trail.py` and bootstrap coverage in `backend/tests/test_auth_api.py` for document lifecycle events, denied access, failed login credential omission, safe metadata filtering, admin route guard behavior, filtering, CSV output, and absence of mutation routes.
+- Added additive migration `20261105_0010` extending the existing `audit_logs` table. Existing rows are retained. Downgrade checks for anonymous rows and refuses if restoring non-null actor constraints would lose/invalidly truncate them. No hash chain was added: database-level administrators can still change rows.
+
+## Files created
+
+- `backend/alembic/versions/20261105_0010_audit_trail.py`
+- `backend/app/schemas/audit.py`
+- `backend/app/services/audit.py`
+- `backend/tests/test_audit_trail.py`
+- `frontend/src/pages/AdminAuditTrailPage.tsx`
+
+## Files modified
+
+- Backend: `backend/app/models/audit_log.py`, `backend/app/bootstrap_admin.py`, `backend/app/services/admin.py`, `backend/app/services/documents.py`, `backend/app/services/document_collaboration.py`, `backend/app/services/email_verifications.py`, `backend/app/services/registrations.py`, `backend/app/api/v1/admin.py`, `backend/app/api/v1/router.py`.
+- Frontend: `frontend/src/App.tsx`, `frontend/src/components/AdminLayout.tsx`, `frontend/src/services/api.ts`, `frontend/src/types/index.ts`, `frontend/e2e/dashboard-authorization.spec.ts`.
+- Documentation: `README.md`, `PROMPTS.md`, `THREATS.md`.
+- The current workspace also retains the preceding Version History follow-up changes in `backend/app/api/v1/documents.py`, `backend/app/schemas/documents.py`, `backend/tests/test_document_authorization_api.py`, `backend/tests/test_documents.py`, and `frontend/src/pages/DocumentsPage.tsx`; these were not reverted as part of Commit 4.
+
+## Investigation notes and corrections
+
+- The repository already had an administrator `AuditLog` and document-specific `DocumentActivity`. Reused and extended those stores rather than creating another audit model; one shared service now writes global admin events while the existing activity feature is preserved.
+- An initial in-process HTTP test attempt stalled in the test harness. Authorization and API behavior tests were changed to exercise the registered admin dependency and route functions directly; the existing long auth integration test still stalls in the full suite.
+- One initial failed-login fixture used a reserved `.test` email address rejected by Pydantic. Changed it to a valid `.com` test domain; the audit tests then passed.
+
+## Validation actually executed
+
+- `PYTHONPATH=.:backend likitha/bin/pytest -q backend/tests/test_audit_trail.py backend/tests/test_documents.py backend/tests/test_document_authorization_api.py backend/tests/test_admin_account_management.py` — **40 passed**.
+- `PYTHONPATH=.:backend likitha/bin/pytest -q backend/tests/test_audit_trail.py backend/tests/test_documents.py backend/tests/test_document_authorization_api.py backend/tests/test_admin_account_management.py backend/tests/test_auth_api.py::test_admin_bootstrap_creates_once_and_never_resets_existing_account` — **41 passed** (includes bootstrap-admin audit event).
+- `timeout 100s env PYTHONPATH=.:backend likitha/bin/pytest -v` — **incomplete, timed out (exit 124)** at existing `backend/tests/test_auth_api.py::test_otp_signup_pending_then_admin_approval_and_login`; 78 tests were collected and the shown tests before the stall passed.
+- `cd frontend && npm run build` — **passed** (`tsc --noEmit`, Vite production bundle; 118 modules).
+- `cd frontend && npm run test:e2e` — **not run**: installed Node.js `18.19.1` is below Playwright's required Node.js 20. The command exited before executing browser tests.
+- `PYTHONPATH=.:backend likitha/bin/python -m compileall -q backend/app backend/alembic/versions backend/tests` — **passed**.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head --sql` — **passed offline**, generated SQL through `20261105_0010`; this did not modify PostgreSQL.
+- `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini downgrade 20261105_0010:20261104_0009 --sql` — **passed offline**, generated downgrade SQL. The live safety guard was not exercised against database rows.
+- `pg_isready -h 127.0.0.1 -p 5432` — **no response**. The migration was not applied; no PostgreSQL data was changed.
+- `git diff --check` — **passed**.
+
+## Remaining issues and setup
+
+- Apply the additive migration against the intended PostgreSQL database only after the database is running, the connection target is verified, and a backup is available. This environment could not reach port 5432.
+- Rerun full `pytest -v` after diagnosing the pre-existing hanging signup/admin test. Do not treat the focused 40-test pass as full-suite validation.
+- Install/use Node.js 20 or newer and rerun Playwright; browser authorization/navigation checks remain unverified here.
+- Audit rows are not tamper-evident. A privileged database operator can alter them. Consider separately controlled append-only external retention before production.
+- No `.env` edits, database reset, Git commit, push, or deployment were performed. No Commit 5/6 work was started.
