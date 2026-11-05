@@ -19,7 +19,7 @@ Systems that manage sensitive documents need reliable identity checks, explicit 
 - One-time Administrator bootstrap from environment configuration.
 - Argon2 password hashing and signed, short-lived JWT access tokens.
 - Purpose-separated signup and password-reset OTPs, hashed at rest and limited by expiry, attempt count, resend cooldown, and hourly send quota.
-- SMTP email delivery with plain-text and HTML bodies; Mailpit support for local development.
+- Selectable email delivery with plain-text and HTML bodies; Mailpit/SMTP locally and Gmail API over HTTPS for compatible production hosts.
 - Administrator APIs for dashboard statistics, users, applications, approvals/rejections, role changes, account states, and audit records.
 - Single-use password-reset authorization and access-token invalidation after password reset.
 - Interchangeable private local filesystem and Supabase Storage providers for supported document formats, with server-side signature/MIME/size validation and UUID-based object keys.
@@ -58,7 +58,7 @@ flowchart LR
   Services --> Models[SQLAlchemy models]
   Models --> DB[(PostgreSQL metadata)]
   Services -->|Authorized private file operations| Storage[Local private directory or Supabase private bucket]
-  Services --> SMTP[SMTP provider or local Mailpit]
+  Services --> Email[Mailpit SMTP or Gmail API HTTPS]
   API -->|Alembic schema revisions| DB
 ```
 
@@ -205,6 +205,8 @@ Edit `.env` locally. Replace placeholders with values for your environment; gene
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Backend SMTP connection and optional authentication. Mailpit defaults are host `localhost`, port `1025`, with no credentials. |
 | `SMTP_FROM`, `SMTP_STARTTLS`, `SMTP_USE_SSL` | SMTP sender and legacy TLS/SSL configuration passed by the current Compose backend service. |
 | `SMTP_FROM_EMAIL`, `SMTP_USE_TLS` | Sender/TLS configuration aliases read by the backend when running directly. Use the correct TLS mode for the selected SMTP provider. |
+| `EMAIL_PROVIDER` | Optional email transport selector: `mailpit` (default, existing SMTP/Mailpit implementation) or `gmail_api` (Gmail HTTPS API). |
+| `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_SENDER_EMAIL` | Backend-only Gmail OAuth settings, required only when `EMAIL_PROVIDER=gmail_api`. Keep client secret and refresh token in Render secret settings and out of logs/source. |
 | `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | Lifetime of reset authorization; default is 10 minutes. |
 | `STORAGE_PROVIDER` | Selects `local` or `supabase`. Defaults to `local` outside production and `supabase` for `APP_ENV=production` if omitted; production explicitly rejects `local`. Selection never falls back when the chosen provider is unavailable. |
 | `LOCAL_STORAGE_PATH` | Private backend-managed directory; defaults to `./private_storage`. It is ignored by Git, excluded from frontend static paths, and persisted by Compose through a private volume. |
@@ -539,13 +541,49 @@ docker compose up -d mailpit
 
 Use Docker Engine/Desktop with Compose installed and running. The checked-in Dockerfiles run Uvicorn and Vite development servers; do not treat this Compose file as a hardened production deployment.
 
-## 17. Live Deployment Instructions
+## 17. Gmail API Email Delivery
+
+`EMAIL_PROVIDER=mailpit` is the default and uses the existing SMTP implementation. Keep this for local development with Mailpit (`localhost:1025`, inbox UI at `http://localhost:8025`). The SMTP variables and templates remain supported. Render Free web services block outbound SMTP ports 25, 465, and 587, so select `gmail_api` there to send through Google's HTTPS API instead. [Render Free service limits](https://render.com/docs/free).
+
+### Configure Google OAuth
+
+1. In Google Cloud Console, create or select a project and enable the **Gmail API**.
+2. Configure Google Auth Platform branding and audience. During development, use **Testing** and add the Gmail account that will send VaultTrace messages as a test user.
+3. Under **Data Access**, request only `https://www.googleapis.com/auth/gmail.send`. Gmail's `messages.send` method supports this scope. [Gmail API scope and method](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send).
+4. Create an OAuth client with application type **Desktop app** and download its JSON file into the repository root as `credentials.json`. This filename is Git-ignored. Do not commit or upload the downloaded file to Render.
+5. In a local Python environment with `requirements.txt` installed, run:
+
+   ```bash
+   python backend/scripts/generate_gmail_token.py --client-secrets credentials.json
+   ```
+
+   The utility opens a local browser consent flow with offline access and explicit consent. It writes only the client ID, client secret, refresh token, token URL, and scope to the ignored root file `.gmail_token.json`; it does not print token values. It is a separate, manually run tool and is never invoked at application startup. Keep both JSON files private.
+
+Google OAuth refresh tokens for external apps left in **Testing** expire after seven days for scopes such as `gmail.send`. Before relying on this for production, publish the OAuth app and complete any verification Google requires for the sensitive Gmail send scope. Testing mode also restricts authorization to listed test users. [Google refresh-token behavior](https://developers.google.com/identity/protocols/oauth2#expiration), [Testing audience limits](https://support.google.com/cloud/answer/15549945), [Gmail scope verification](https://developers.google.com/workspace/gmail/api/auth/scopes).
+
+### Configure the backend provider
+
+Set these Render backend variables; copy the credential fields from `.gmail_token.json` through a secure editor or secret manager, without putting them in source control:
+
+```text
+EMAIL_PROVIDER=gmail_api
+GMAIL_CLIENT_ID=<OAuth client ID>
+GMAIL_CLIENT_SECRET=<OAuth client secret>
+GMAIL_REFRESH_TOKEN=<OAuth refresh token>
+GMAIL_SENDER_EMAIL=<same Gmail account used to authorize>
+```
+
+The sender must be the same Gmail account that authorized the refresh token. The API request uses that sender as `userId`, so Gmail rejects a credential/account mismatch. OAuth uses only the `gmail.send` scope. The Google auth library refreshes expired access tokens automatically. API errors are logged using only an exception type, HTTP status, and fixed diagnostic; messages, recipients, and OAuth tokens are not logged.
+
+To return to local Mailpit delivery, use `EMAIL_PROVIDER=mailpit` (or omit the variable). SMTP settings remain available and unchanged. No database schema or migration is involved.
+
+## 18. Live Deployment Instructions
 
 No live deployment target, hosting-provider configuration, production reverse proxy, or production Compose file is included. A deployment cannot be launched from this repository with a verified provider-specific command.
 
 Before deploying, an operator should provision PostgreSQL and SMTP, configure secrets outside the repository, run reviewed Alembic migrations as a release step, serve a production frontend build from a static web server/CDN, run the API behind an HTTPS reverse proxy, configure exact CORS origins, backups, monitoring, and recovery procedures, and use production server/container settings rather than the development Dockerfiles. Validate role-change `PATCH` requests and CORS configuration for the chosen deployment topology before release.
 
-## 18. Demo Screenshots
+## 19. Demo Screenshots
 
 Screenshots are not currently included. Add reviewed, synthetic-data screenshots here when available; do not publish real user addresses, tokens, OTPs, or private document data.
 

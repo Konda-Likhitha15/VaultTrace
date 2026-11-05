@@ -153,6 +153,10 @@ activemq-data/
 .env
 .envrc
 .venv
+credentials.json
+credentials-*.json
+client_secret*.json
+.gmail_token.json
 env/
 venv/
 ENV/

@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = False
     smtp_from_email: str | None = None
     smtp_use_tls: bool | None = None
+    email_provider: Literal["mailpit", "gmail_api"] = "mailpit"
+    gmail_client_id: str | None = None
+    gmail_client_secret: SecretStr | None = None
+    gmail_refresh_token: SecretStr | None = None
+    gmail_sender_email: str | None = None
     password_reset_token_expire_minutes: int = 10
     storage_provider: Literal["local", "supabase"] | None = None
     local_storage_path: Path = Path("./private_storage")

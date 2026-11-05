@@ -41,7 +41,20 @@ def _smtp_error_diagnostic(exc: Exception) -> tuple[int | None, str]:
 
 
 def send_email(recipient: str, subject: str, body: str, html_body: str | None = None) -> None:
-    """Send a plain-text and optional HTML message using environment SMTP."""
+    """Send through the selected provider while preserving the existing sync API."""
+    if settings.email_provider == "gmail_api":
+        # Render Free blocks outbound SMTP ports; Gmail API uses HTTPS. Existing
+        # synchronous FastAPI route handlers run in Starlette's worker pool, so
+        # the supported synchronous Google auth transport does not block the
+        # event loop. Mailpit remains the unchanged local SMTP path by default.
+        from app.services.gmail_api import send_gmail_api_email
+
+        send_gmail_api_email(recipient, subject, body, html_body)
+        return
+
+    # EMAIL_PROVIDER=mailpit intentionally continues through the existing SMTP
+    # implementation. Local Mailpit capture and legacy SMTP providers remain
+    # compatible without changing existing callers or email templates.
     try:
         message = EmailMessage()
         message["From"] = settings.smtp_from_email or settings.smtp_from
