@@ -1,5 +1,7 @@
 """Version one API route aggregation and authentication endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,6 +22,7 @@ from app.core.config import settings
 
 auth_router = APIRouter(prefix="/auth", tags=["authentication"])
 api_router = APIRouter()
+auth_logger = logging.getLogger("vaulttrace.auth")
 
 
 def public_user(user: User) -> UserResponse:
@@ -36,7 +39,7 @@ def send_email_otp(payload: OtpRequest, db: Session = Depends(get_db)) -> OtpRes
     except OtpCooldown as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Please wait before requesting another code", headers={"Retry-After": str(max(1, exc.retry_after))}) from exc
     except OtpRateLimited as exc:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many codes requested; try again later") from exc
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many codes requested; try again later", headers={"Retry-After": str(exc.retry_after)}) from exc
     except EmailDeliveryError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Email delivery is temporarily unavailable") from exc
     return OtpResponse(message="If this address can be registered, a verification code has been sent.")
@@ -50,10 +53,15 @@ def send_signup_otp(payload: OtpRequest, db: Session = Depends(get_db)) -> OtpRe
     except VerificationCooldown as exc:
         raise HTTPException(status_code=429, detail="Please wait before requesting another code", headers={"Retry-After": str(exc.retry_after)}) from exc
     except VerificationRateLimited as exc:
-        raise HTTPException(status_code=429, detail="Too many codes requested; try again later") from exc
+        raise HTTPException(status_code=429, detail="Too many codes requested; try again later", headers={"Retry-After": str(exc.retry_after)}) from exc
     except EmailDeliveryError as exc:
         raise HTTPException(status_code=503, detail="Email delivery is temporarily unavailable") from exc
     except SQLAlchemyError as exc:
+        auth_logger.error(
+            "Signup OTP database operation failed (exception_type=%s diagnostic=%s)",
+            type(exc).__name__,
+            "database query or transaction failed",
+        )
         raise HTTPException(status_code=503, detail="Email verification is temporarily unavailable. Check the database connection and migrations.") from exc
     return OtpResponse(message="If this address can be registered, a verification code has been sent.")
 

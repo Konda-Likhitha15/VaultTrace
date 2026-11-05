@@ -58,7 +58,9 @@ def test_signup_otp_verification_registration_and_replay_rejection(client: InPro
 
 def test_signup_expiration_attempt_limit_and_resend_cooldown(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
     email, code = "otp.limits@example.com", send_signup_code(client, monkeypatch, "otp.limits@example.com")
-    assert client.post("/api/v1/auth/signup/send-otp", json={"email": email}).status_code == 429
+    limited = client.post("/api/v1/auth/signup/send-otp", json={"email": email})
+    assert limited.status_code == 429
+    assert limited.headers.get("retry-after")
     for _ in range(5):
         assert client.post("/api/v1/auth/signup/verify-otp", json={"email": email, "otp": "000000"}).status_code == 400
     assert client.post("/api/v1/auth/signup/verify-otp", json={"email": email, "otp": code}).status_code == 400
@@ -99,6 +101,90 @@ def test_otp_purpose_is_separated_and_smtp_failure_is_not_delivered(client: InPr
     with TestSession() as db:
         challenge = db.scalar(select(EmailVerification).where(EmailVerification.email == failed_email))
         assert challenge is not None and not challenge.is_delivered and challenge.is_used
+
+
+def test_failed_delivery_does_not_block_email_beyond_rate_window(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.email_verifications import send_verification_otp
+
+    failed_email = "retry.after.failure@example.com"
+    monkeypatch.setattr(
+        "app.services.email_verifications.send_otp_email",
+        lambda *_args: (_ for _ in ()).throw(EmailDeliveryError("smtp unavailable")),
+    )
+    with TestSession() as db, pytest.raises(EmailDeliveryError):
+        send_verification_otp(db, failed_email, "SIGNUP")
+    with TestSession.begin() as db:
+        challenge = db.scalar(select(EmailVerification).where(EmailVerification.email == failed_email))
+        assert challenge is not None and challenge.is_used and not challenge.is_delivered
+        challenge.last_sent_at = datetime.now(timezone.utc) - timedelta(hours=1, seconds=1)
+        challenge.send_window_started_at = datetime.now(timezone.utc) - timedelta(hours=1, seconds=1)
+        challenge.created_at = datetime.now(timezone.utc) - timedelta(hours=1, seconds=1)
+    delivered: list[str] = []
+    monkeypatch.setattr("app.services.email_verifications.send_otp_email", lambda _recipient, code: delivered.append(code))
+    with TestSession() as db:
+        assert send_verification_otp(db, failed_email, "SIGNUP")
+    assert delivered
+
+
+def test_database_error_returns_safe_503_and_logs_only_exception_type(client: InProcessClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+    from app.api.v1.router import send_signup_otp
+    from app.schemas.auth import OtpRequest
+
+    def fail_database(*_args, **_kwargs):
+        raise OperationalError("query", {}, Exception("sensitive database text"))
+
+    monkeypatch.setattr("app.api.v1.router.send_verification_otp", fail_database)
+    with TestSession() as db, pytest.raises(HTTPException) as caught:
+        send_signup_otp(OtpRequest(email="db.failure@example.com"), db)
+    assert caught.value.status_code == 503
+    assert caught.value.detail != "sensitive database text"
+    assert "OperationalError" in caplog.text
+    assert "sensitive database text" not in caplog.text
+
+
+def test_signup_otp_persists_delivered_digest_and_enforces_database_backed_limits(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.services.email_verifications import (
+        VerificationCooldown,
+        VerificationExpired,
+        VerificationRateLimited,
+        send_verification_otp,
+        verify_verification_otp,
+    )
+
+    email = "persisted.limits@example.com"
+    issued: list[str] = []
+    monkeypatch.setattr(settings, "otp_max_sends_per_hour", 2)
+    monkeypatch.setattr(settings, "otp_resend_cooldown_seconds", 60)
+    monkeypatch.setattr("app.services.email_verifications.send_otp_email", lambda _to, code: issued.append(code))
+    with TestSession() as db:
+        assert send_verification_otp(db, email, "SIGNUP")
+    with TestSession() as db:
+        challenge = db.scalar(select(EmailVerification).where(EmailVerification.email == email))
+        assert challenge is not None and challenge.is_delivered and challenge.otp_hash != issued[-1]
+    with TestSession() as db:
+        with pytest.raises(VerificationCooldown):
+            send_verification_otp(db, email, "SIGNUP")
+    with TestSession.begin() as db:
+        challenge = db.scalar(select(EmailVerification).where(EmailVerification.email == email))
+        assert challenge is not None
+        challenge.last_sent_at = datetime.now(timezone.utc) - timedelta(seconds=61)
+    with TestSession() as db:
+        assert send_verification_otp(db, email, "SIGNUP")
+    with TestSession.begin() as db:
+        challenge = db.scalar(select(EmailVerification).where(EmailVerification.email == email).order_by(EmailVerification.created_at.desc()))
+        assert challenge is not None
+        challenge.last_sent_at = datetime.now(timezone.utc) - timedelta(seconds=61)
+        challenge.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    with TestSession() as db:
+        with pytest.raises(VerificationRateLimited) as limited:
+            send_verification_otp(db, email, "SIGNUP")
+        assert 1 <= limited.value.retry_after <= 3600
+    with TestSession() as db:
+        with pytest.raises(VerificationExpired):
+            verify_verification_otp(db, email, issued[-1], "SIGNUP")
 
 
 def test_forgot_password_is_generic_and_reset_invalidates_old_password_and_session(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:

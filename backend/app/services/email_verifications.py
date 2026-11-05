@@ -37,6 +37,9 @@ class VerificationCooldown(VerificationError):
 class VerificationRateLimited(VerificationError):
     """The per-address hourly send limit was reached."""
 
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+
 
 class SignupProofRequired(VerificationError):
     """No unused verified signup proof exists for the requested email."""
@@ -86,7 +89,8 @@ def send_verification_otp(db: Session, email: str, purpose: str) -> bool:
             if now - window_start >= timedelta(hours=1):
                 window_start, count = now, 0
             if count >= settings.otp_max_sends_per_hour:
-                raise VerificationRateLimited
+                retry_after = max(1, int((window_start + timedelta(hours=1) - now).total_seconds()) + 1)
+                raise VerificationRateLimited(retry_after)
             previous.send_count = count + 1
             previous.send_window_started_at = window_start
         # All prior records are invalidated, including verified signup proofs.

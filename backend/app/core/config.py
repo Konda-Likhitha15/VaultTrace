@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     app_name: str = "VaultTrace"
     app_env: str = "development"
     database_url: str
+    production_database_url: SecretStr | None = None
+    alembic_use_production_database: bool = False
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
@@ -20,12 +22,12 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     otp_hash_secret: str | None = None
-    otp_expiration_minutes: int = 5
-    otp_resend_cooldown_seconds: int = 60
-    otp_max_sends_per_hour: int = 5
-    otp_max_attempts: int = 5
+    otp_expiration_minutes: int = Field(default=5, ge=1)
+    otp_resend_cooldown_seconds: int = Field(default=60, ge=0)
+    otp_max_sends_per_hour: int = Field(default=10, ge=1)
+    otp_max_attempts: int = Field(default=5, ge=1)
     smtp_host: str = "localhost"
-    smtp_port: int = 1025
+    smtp_port: int = Field(default=1025, ge=1, le=65535)
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from: str = "vaulttrace@localhost"
@@ -45,6 +47,10 @@ class Settings(BaseSettings):
     admin_bootstrap_username: str | None = None
     admin_bootstrap_password: str | None = None
     admin_bootstrap_full_name: str | None = None
+    admin2_email: str | None = None
+    admin2_username: str | None = None
+    admin2_password: str | None = None
+    admin2_full_name: str | None = None
 
     @model_validator(mode="after")
     def choose_storage_provider(self) -> "Settings":

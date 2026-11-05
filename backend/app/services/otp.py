@@ -27,6 +27,9 @@ class OtpCooldown(OtpError):
 class OtpRateLimited(OtpError):
     """Raised after the per-email send limit is reached."""
 
+    def __init__(self, retry_after: int):
+        self.retry_after = retry_after
+
 
 class OtpInvalid(OtpError):
     """Raised for an unknown, incorrect, locked, or already used OTP."""
@@ -75,7 +78,8 @@ def request_otp(db: Session, email: str) -> bool:
                 challenge.send_count = 0
                 challenge.send_window_started_at = now
             if challenge.send_count >= settings.otp_max_sends_per_hour:
-                raise OtpRateLimited
+                retry_after = max(1, int((window_started + timedelta(hours=1) - now).total_seconds()) + 1)
+                raise OtpRateLimited(retry_after)
 
         otp = f"{secrets.randbelow(1_000_000):06d}"
         if challenge is None:
