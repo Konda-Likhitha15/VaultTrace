@@ -6,7 +6,7 @@ type AuthContextValue = {
   user: User | null;
   token: string | null;
   login: (email: string, password: string) => Promise<User>;
-  logout: () => Promise<void>;
+  logout: () => Promise<boolean>;
   refreshUser: () => Promise<void>;
 };
 
@@ -36,7 +36,15 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
     const activeToken = token;
     setToken(null);
     setUser(null);
-    if (activeToken) await requestLogout(activeToken);
+    if (!activeToken) return true;
+    try {
+      await requestLogout(activeToken);
+      return true;
+    } catch {
+      // Local credentials are cleared regardless; callers can explain that
+      // server-side revocation could not be confirmed.
+      return false;
+    }
   }, [token]);
 
   const refreshUser = useCallback(async () => {

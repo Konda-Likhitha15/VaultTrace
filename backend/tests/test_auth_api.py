@@ -3,12 +3,16 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
+from app.api.v1.router import change_current_password, update_current_user
 from app.core.config import settings
 from app.models import AuditLog, OtpChallenge, RegistrationApplication, Role, User
+from app.schemas.auth import PasswordChangeRequest, ProfileUpdateRequest
 from app.bootstrap_admin import bootstrap_admin
+from app.services.admin import dashboard_overview
 from backend.tests.client import InProcessClient
 from backend.tests.database import TestSession
 
@@ -35,8 +39,8 @@ def submit_signup(client: InProcessClient, email: str, otp: str, username: str |
             "username": username or email.split("@")[0],
             "email": email,
             "phone_number": "+1-555-0100",
-            "password": "long-enough-secret",
-            "confirm_password": "long-enough-secret",
+            "password": "Long-enough-secret1A!",
+            "confirm_password": "Long-enough-secret1A!",
         },
     )
 
@@ -44,7 +48,7 @@ def submit_signup(client: InProcessClient, email: str, otp: str, username: str |
 def create_admin() -> tuple[int, str, str]:
     """Create a test administrator with a properly hashed password."""
     email = "admin.integration@example.com"
-    password = "admin-test-password"
+    password = "Admin-test-password1!"
     with TestSession.begin() as session:
         role = session.scalar(select(Role).where(Role.name == "Administrator"))
         assert role is not None
@@ -66,7 +70,7 @@ def create_admin() -> tuple[int, str, str]:
 
 def create_active_user() -> tuple[str, str]:
     """Create an active Viewer used to test role-denied routes."""
-    email, password = "active.viewer@example.com", "viewer-test-password"
+    email, password = "active.viewer@example.com", "Viewer-test-password1!"
     with TestSession.begin() as session:
         role = session.scalar(select(Role).where(Role.name == "Viewer"))
         assert role is not None
@@ -81,12 +85,57 @@ def admin_headers(client: InProcessClient, email: str, password: str) -> dict[st
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def test_profile_update_and_password_change_require_current_password(client: InProcessClient) -> None:
+    """Only the signed-in user can update editable fields and change their password."""
+    _admin_id, email, old_password = create_admin()
+    with TestSession() as session:
+        user = session.get(User, _admin_id)
+        assert user is not None
+        profile = update_current_user(ProfileUpdateRequest(full_name="Updated Admin", username="updated-admin", phone_number="+1 555 0101"), None, user, session)
+        assert profile.full_name == "Updated Admin" and profile.username == "updated-admin"
+        assert profile.email == email and profile.role == "Administrator"
+    with TestSession() as session:
+        user = session.get(User, _admin_id)
+        assert user is not None
+        bad_current = PasswordChangeRequest(current_password="wrong-current-password", password="New-admin-password1!", confirm_password="New-admin-password1!")
+        with pytest.raises(HTTPException) as rejected:
+            change_current_password(bad_current, None, user, session)
+        assert rejected.value.status_code == 400
+        with pytest.raises(ValueError):
+            PasswordChangeRequest(current_password=old_password, password="weakpassword", confirm_password="weakpassword")
+        change = PasswordChangeRequest(current_password=old_password, password="New-admin-password1!", confirm_password="New-admin-password1!")
+        response = change_current_password(change, None, user, session)
+        assert response.status_code == 204
+        assert user.token_version == 1
+        assert verify_password("New-admin-password1!", user.password_hash)
+        assert not verify_password(old_password, user.password_hash)
+
+
+def test_profile_update_rejects_duplicate_username(client: InProcessClient) -> None:
+    _admin_id, email, password = create_admin()
+    create_active_user()
+    del email, password
+    with TestSession() as session:
+        user = session.get(User, _admin_id)
+        assert user is not None
+        with pytest.raises(HTTPException) as response:
+            update_current_user(ProfileUpdateRequest(full_name="Integration Administrator", username="active-viewer", phone_number=None), None, user, session)
+        assert response.value.status_code == 409
+
+
+def test_admin_dashboard_aggregates_existing_document_tables(client: InProcessClient) -> None:
+    with TestSession() as session:
+        overview = dashboard_overview(session)
+    assert overview["total_documents"] == 0
+    assert overview["active_document_shares"] == 0
+
+
 def test_admin_bootstrap_creates_once_and_never_resets_existing_account(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Bootstrap uses configured credentials and does not rewrite an existing admin."""
     monkeypatch.setattr("app.bootstrap_admin.SessionLocal", TestSession)
     monkeypatch.setattr(settings, "admin_bootstrap_email", "bootstrap@example.com")
     monkeypatch.setattr(settings, "admin_bootstrap_username", "bootstrap-admin")
-    monkeypatch.setattr(settings, "admin_bootstrap_password", "initial-admin-password")
+    monkeypatch.setattr(settings, "admin_bootstrap_password", "Initial-admin-password1!")
     monkeypatch.setattr(settings, "admin_bootstrap_full_name", "Bootstrap Admin")
     assert bootstrap_admin() is True
     with TestSession() as session:
@@ -96,11 +145,22 @@ def test_admin_bootstrap_creates_once_and_never_resets_existing_account(client: 
         assert bootstrap_event is not None and bootstrap_event.actor_id is None and bootstrap_event.outcome == "SUCCESS"
         original_hash = admin.password_hash
         assert admin.email_verified and admin.account_status == "ACTIVE"
-    monkeypatch.setattr(settings, "admin_bootstrap_password", "replacement-admin-password")
+    # A rerun remains a no-op when the account exists; no new password is used.
+    monkeypatch.setattr(settings, "admin_bootstrap_password", "weak-legacy-password")
     assert bootstrap_admin() is False
     with TestSession() as session:
         admin = session.scalar(select(User).where(User.email == "bootstrap@example.com"))
         assert admin is not None and admin.password_hash == original_hash
+
+
+def test_admin_bootstrap_rejects_passwords_that_miss_creation_policy(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.bootstrap_admin.SessionLocal", TestSession)
+    monkeypatch.setattr(settings, "admin_bootstrap_email", "bootstrap@example.com")
+    monkeypatch.setattr(settings, "admin_bootstrap_username", "bootstrap-admin")
+    monkeypatch.setattr(settings, "admin_bootstrap_password", "weak-password-only")
+    monkeypatch.setattr(settings, "admin_bootstrap_full_name", "Bootstrap Admin")
+    with pytest.raises(ValueError, match="does not meet the password policy"):
+        bootstrap_admin()
 
 
 def test_otp_signup_pending_then_admin_approval_and_login(client: InProcessClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,7 +182,7 @@ def test_otp_signup_pending_then_admin_approval_and_login(client: InProcessClien
         assert user is not None and user.email_verified is True and not user.is_active
         assert user.account_status == "PENDING"
         assert user.password_hash != "long-enough-secret"
-    assert client.post("/api/v1/auth/login", json={"email": "applicant@example.com", "password": "long-enough-secret"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"email": "applicant@example.com", "password": "Long-enough-secret1A!"}).status_code == 401
 
     admin_id, admin_email, admin_password = create_admin()
     headers = admin_headers(client, admin_email, admin_password)
@@ -140,7 +200,7 @@ def test_otp_signup_pending_then_admin_approval_and_login(client: InProcessClien
     assert approved.status_code == 200 and approved.json()["notification_sent"] is True
     assert decisions[-1][0] == "applicant@example.com"
 
-    login = client.post("/api/v1/auth/login", json={"email": "applicant@example.com", "password": "long-enough-secret"})
+    login = client.post("/api/v1/auth/login", json={"email": "applicant@example.com", "password": "Long-enough-secret1A!"})
     assert login.status_code == 200
     assert login.json()["user"]["role"] == "Owner"
     assert client.get("/api/v1/owner", headers={"Authorization": f"Bearer {login.json()['access_token']}"}).status_code == 200
@@ -153,6 +213,8 @@ def test_otp_signup_pending_then_admin_approval_and_login(client: InProcessClien
         "total_rejected_applications": 0,
         "total_owners": 1,
         "total_viewers": 0,
+        "total_documents": 0,
+        "active_document_shares": 0,
     }
     with TestSession() as session:
         application = session.get(RegistrationApplication, application_id)
@@ -222,8 +284,8 @@ def test_signup_requires_verified_email_and_validates_password_confirmation(clie
         "full_name": "Unverified User",
         "username": "unverified",
         "email": "unverified@example.com",
-        "password": "long-enough-secret",
-        "confirm_password": "a-different-password",
+        "password": "Long-enough-secret1A!",
+        "confirm_password": "A-different-password1!",
     }
     assert client.post("/api/v1/auth/register", json=body).status_code == 422
     body["confirm_password"] = body["password"]
@@ -248,7 +310,7 @@ def test_admin_apis_require_administrator_and_rejection_is_audited(client: InPro
         json={"reason": "Unable to validate the submitted information"},
     )
     assert rejected.status_code == 200 and rejected.json()["notification_sent"] is True
-    assert client.post("/api/v1/auth/login", json={"email": "reject@example.com", "password": "long-enough-secret"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"email": "reject@example.com", "password": "Long-enough-secret1A!"}).status_code == 401
     dashboard = client.get("/api/v1/admin/dashboard", headers=headers)
     assert dashboard.status_code == 200 and dashboard.json()["total_rejected_applications"] == 1
     with TestSession() as session:
@@ -280,10 +342,10 @@ def test_role_and_account_management_is_audited_and_protects_admin(client: InPro
     assert client.patch(f"/api/v1/admin/users/{admin_user_id}/role", headers=headers, json={"role": "Viewer"}).status_code == 403
     assert client.patch(f"/api/v1/admin/users/{admin_user_id}/status", headers=headers, json={"status": "SUSPENDED"}).status_code == 403
     assert client.patch(f"/api/v1/admin/users/{managed_id}/status", headers=headers, json={"status": "SUSPENDED"}).status_code == 200
-    assert client.post("/api/v1/auth/login", json={"email": "managed@example.com", "password": "long-enough-secret"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"email": "managed@example.com", "password": "Long-enough-secret1A!"}).status_code == 401
     assert client.patch(f"/api/v1/admin/users/{managed_id}/status", headers=headers, json={"status": "ACTIVE"}).status_code == 200
     assert client.patch(f"/api/v1/admin/users/{managed_id}/status", headers=headers, json={"status": "INACTIVE"}).status_code == 200
-    assert client.post("/api/v1/auth/login", json={"email": "managed@example.com", "password": "long-enough-secret"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"email": "managed@example.com", "password": "Long-enough-secret1A!"}).status_code == 401
     with TestSession() as session:
         actions = set(session.scalars(select(AuditLog.action).where(AuditLog.actor_id == admin_id, AuditLog.target_user_id == managed_id)).all())
         assert {"USER_ROLE_CHANGED", "ACCOUNT_SUSPENDED", "ACCOUNT_ACTIVATED", "ACCOUNT_DEACTIVATED"} <= actions

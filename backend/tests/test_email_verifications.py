@@ -14,7 +14,7 @@ from backend.tests.database import TestSession
 
 def signup_request(email: str, username: str) -> dict[str, str]:
     """Return a valid signup request payload."""
-    return {"full_name": "Test Applicant", "username": username, "email": email, "password": "safe-password-123", "confirm_password": "safe-password-123"}
+    return {"full_name": "Test Applicant", "username": username, "email": email, "password": "Safe-password-123A!", "confirm_password": "Safe-password-123A!"}
 
 
 def send_signup_code(client: InProcessClient, monkeypatch: pytest.MonkeyPatch, email: str) -> str:
@@ -199,12 +199,12 @@ def test_forgot_password_is_generic_and_reset_invalidates_old_password_and_sessi
     reset = client.post("/api/v1/auth/verify-reset-otp", json={"email": email, "otp": sent[-1]})
     assert reset.status_code == 200
     auth = reset.json()["authorization_token"]
-    assert client.post("/api/v1/auth/reset-password", json={"authorization_token": auth, "password": "new-safe-password-456", "confirm_password": "new-safe-password-456"}).status_code == 200
+    assert client.post("/api/v1/auth/reset-password", json={"authorization_token": auth, "password": "New-safe-password-456A!", "confirm_password": "New-safe-password-456A!"}).status_code == 200
     assert client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {session_token}"}).status_code == 401
     assert client.post("/api/v1/auth/login", json={"email": email, "password": old_password}).status_code == 401
-    login = client.post("/api/v1/auth/login", json={"email": email, "password": "new-safe-password-456"})
+    login = client.post("/api/v1/auth/login", json={"email": email, "password": "New-safe-password-456A!"})
     assert login.status_code == 200
-    assert client.post("/api/v1/auth/reset-password", json={"authorization_token": auth, "password": "other-safe-password-789", "confirm_password": "other-safe-password-789"}).status_code == 400
+    assert client.post("/api/v1/auth/reset-password", json={"authorization_token": auth, "password": "Other-safe-password-789A!", "confirm_password": "Other-safe-password-789A!"}).status_code == 400
     with TestSession() as db:
         authorization = db.scalar(select(PasswordResetAuthorization))
         assert authorization is not None and authorization.is_used
@@ -223,5 +223,5 @@ def test_reset_authorization_expiration_and_invalid_otp(client: InProcessClient,
         authorization = db.scalar(select(PasswordResetAuthorization))
         assert authorization is not None
         authorization.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-    response = client.post("/api/v1/auth/reset-password", json={"authorization_token": token, "password": "new-safe-password-456", "confirm_password": "new-safe-password-456"})
+    response = client.post("/api/v1/auth/reset-password", json={"authorization_token": token, "password": "New-safe-password-456A!", "confirm_password": "New-safe-password-456A!"})
     assert response.status_code == 400

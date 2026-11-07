@@ -2,14 +2,17 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, SecretStr, model_validator
+from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator, model_validator
+from app.core.password_policy import validate_new_password
 
 
 class Credentials(BaseModel):
     """Email and password supplied during login."""
 
     email: EmailStr
-    password: SecretStr = Field(min_length=12, max_length=128)
+    # Do not enforce the current password creation policy during login: legacy
+    # accounts must retain access until they choose to reset their password.
+    password: SecretStr = Field(min_length=1, max_length=128)
 
 
 class RegistrationRequest(Credentials):
@@ -19,6 +22,12 @@ class RegistrationRequest(Credentials):
     username: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
     phone_number: str | None = Field(default=None, max_length=32)
     confirm_password: SecretStr = Field(min_length=12, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_meets_policy(cls, password: SecretStr) -> SecretStr:
+        validate_new_password(password.get_secret_value())
+        return password
 
     @model_validator(mode="after")
     def passwords_match(self) -> "RegistrationRequest":
@@ -50,6 +59,12 @@ class PasswordResetRequest(BaseModel):
     authorization_token: str = Field(min_length=32, max_length=256)
     password: SecretStr = Field(min_length=12, max_length=128)
     confirm_password: SecretStr = Field(min_length=12, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_meets_policy(cls, password: SecretStr) -> SecretStr:
+        validate_new_password(password.get_secret_value())
+        return password
 
     @model_validator(mode="after")
     def passwords_match(self) -> "PasswordResetRequest":
@@ -89,6 +104,43 @@ class UserResponse(BaseModel):
     username: str
     role: str
     account_status: str = "ACTIVE"
+    phone_number: str | None = None
+    organization_id: int | None = None
+    organization_name: str | None = None
+    created_at: datetime | None = None
+
+
+class StorageUsageResponse(BaseModel):
+    total_stored_bytes: int
+    quota_bytes: int | None = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Editable fields for the authenticated user's own profile."""
+
+    full_name: str = Field(min_length=1, max_length=160)
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")
+    phone_number: str | None = Field(default=None, max_length=32)
+
+
+class PasswordChangeRequest(BaseModel):
+    """Verify the current password before replacing it with a policy-compliant one."""
+
+    current_password: SecretStr = Field(min_length=1, max_length=128)
+    password: SecretStr = Field(min_length=12, max_length=128)
+    confirm_password: SecretStr = Field(min_length=12, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_meets_policy(cls, password: SecretStr) -> SecretStr:
+        validate_new_password(password.get_secret_value())
+        return password
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> "PasswordChangeRequest":
+        if self.password.get_secret_value() != self.confirm_password.get_secret_value():
+            raise ValueError("Passwords do not match")
+        return self
 
 
 class TokenResponse(BaseModel):

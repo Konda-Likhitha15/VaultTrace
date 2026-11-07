@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import RegistrationApplication, Role, User
+from app.models import Document, DocumentPermission, RegistrationApplication, Role, User
 from app.services.audit import record_audit_event
 
 
@@ -43,6 +43,7 @@ def dashboard_overview(db: Session) -> dict[str, int]:
     """Return dashboard counts queried from the database."""
     count_users = lambda *criteria: int(db.scalar(select(func.count(User.id)).where(*criteria)) or 0)
     count_applications = lambda status: int(db.scalar(select(func.count(RegistrationApplication.id)).where(RegistrationApplication.approval_status == status)) or 0)
+    now = datetime.now(timezone.utc)
     return {
         "total_registered_users": count_users(),
         "total_active_users": count_users(User.account_status == "ACTIVE", User.is_active.is_(True)),
@@ -51,6 +52,8 @@ def dashboard_overview(db: Session) -> dict[str, int]:
         "total_rejected_applications": count_applications("REJECTED"),
         "total_owners": count_users(User.role.has(Role.name == "Owner"), User.account_status.in_(("ACTIVE", "INACTIVE", "SUSPENDED"))),
         "total_viewers": count_users(User.role.has(Role.name == "Viewer"), User.account_status.in_(("ACTIVE", "INACTIVE", "SUSPENDED"))),
+        "total_documents": int(db.scalar(select(func.count(Document.id)).where(Document.deleted_at.is_(None))) or 0),
+        "active_document_shares": int(db.scalar(select(func.count(DocumentPermission.id)).where(DocumentPermission.revoked_at.is_(None), (DocumentPermission.expires_at.is_(None)) | (DocumentPermission.expires_at > now))) or 0),
     }
 
 

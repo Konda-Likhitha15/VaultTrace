@@ -18,6 +18,8 @@ import { SharedByMePage } from './pages/SharedByMePage';
 import { DeletedDocumentsPage } from './pages/DeletedDocumentsPage';
 import { AdminDocumentsPage } from './pages/AdminDocumentsPage';
 import { AdminAuditTrailPage } from './pages/AdminAuditTrailPage';
+import { AdminStoragePage, AdminStorageUserPage } from './pages/AdminStoragePage';
+import { ProfilePage } from './pages/ProfilePage';
 import { UserLayout } from './components/UserLayout';
 
 function homeForRole(role: string): string {
@@ -64,6 +66,14 @@ function ProtectedUserDocumentPage({ children, ownerOnly = false }: { children: 
   return <UserLayout>{children}</UserLayout>;
 }
 
+function ProtectedProfile() {
+  const { user } = useAppContext();
+  if (!user) return <Navigate to="/login" replace />;
+  return user.role === 'Administrator'
+    ? <AdminLayout><ProfilePage /></AdminLayout>
+    : <UserLayout><ProfilePage /></UserLayout>;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -71,6 +81,7 @@ export default function App() {
       <Route path="/signup" element={<SignupPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/profile" element={<ProtectedProfile />} />
       <Route path="/documents" element={<ProtectedDocuments />} />
       <Route path="/documents/upload" element={<ProtectedDocumentUpload />} />
       <Route path="/documents/search" element={<ProtectedUserDocumentPage><DocumentSearchPage /></ProtectedUserDocumentPage>} />
@@ -85,6 +96,8 @@ export default function App() {
         <Route path="accounts" element={<AdminUsersPage mode="accounts" />} />
         <Route path="applications" element={<AdminApplicationsPage />} />
         <Route path="documents" element={<AdminDocumentsPage />} />
+        <Route path="storage" element={<AdminStoragePage />} />
+        <Route path="storage/users/:userId" element={<AdminStorageUserPage />} />
         <Route path="audit-trail" element={<AdminAuditTrailPage />} />
       </Route>
       <Route path="/owner/dashboard" element={<ProtectedDashboard />} />

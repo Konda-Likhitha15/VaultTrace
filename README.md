@@ -1,645 +1,270 @@
 # VaultTrace
 
-**VaultTrace** is a secure document management platform with verified accounts, administrator approval, role-aware access, private document storage, explicit document sharing, version history, recoverable deletion, and document activity audit trails.
+VaultTrace is a document management application built with React, FastAPI, and PostgreSQL. It provides verified account registration with administrator approval, role-aware administration, private file storage, explicit document sharing, version history, and audit records.
 
-## 2. Project Overview
+> **Project status:** This repository contains the application and local development setup. It does not contain a Render deployment manifest, a production frontend image, or evidence of production security certification. Review [known limitations](docs/ROADMAP.md#known-limitations) and [deployment guidance](docs/DEPLOYMENT.md) before deploying.
 
-VaultTrace provides a React web client and a FastAPI JSON API backed by PostgreSQL. New users verify an email address and submit an application. An administrator reviews the application and assigns the Owner or Viewer role. Administrators explicitly assign users to organizations; existing accounts remain unassigned until this step. Owners can grant active, verified users in the same organization READ or EDIT access to individual documents, with optional expiration. FastAPI rechecks current account, organization, and grant state before protected document operations. Administrators can inspect document metadata and access audit events, but are not automatically granted file-content access. The backend stores file bytes in either a private local directory or a private Supabase bucket; PostgreSQL stores document metadata, organization membership, permissions, versions, and audit events.
+## Contents
 
-Password-reset requests use a separate email OTP purpose. A successful reset requires a short-lived, single-use authorization and invalidates existing access tokens for that user.
+- [Features](#features)
+- [Technology](#technology)
+- [Architecture](#architecture)
+- [Authentication and documents](#authentication-and-documents)
+- [Quick start](#quick-start)
+- [Environment variables](#environment-variables)
+- [Database and migrations](#database-and-migrations)
+- [Docker Compose](#docker-compose)
+- [Tests](#tests)
+- [API documentation](#api-documentation)
+- [Known limitations and roadmap](#known-limitations-and-roadmap)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Security](#security)
+- [Documentation](#documentation)
+- [License](#license)
 
-## 3. Problem Statement
+## Features
 
-Systems that manage sensitive documents need reliable identity checks, explicit approval, server-enforced access roles, private file storage, and traceable administrative decisions. VaultTrace pairs those account controls with backend-authorized document operations and integrity checks.
+- Email OTP verification and administrator-reviewed registration.
+- Administrator, Owner, and Viewer roles enforced by the API.
+- Argon2 password hashing, short-lived JWT access tokens, logout revocation, and password reset.
+- Private local-storage and Supabase Storage adapters.
+- Server-validated document uploads, authorized previews/downloads, versions, soft deletion, and restore.
+- Explicit READ/EDIT sharing for active, verified members of the same organization, with expiry and revocation.
+- Administrator user, application, organization, document-metadata, and audit pages.
+- Mailpit/SMTP locally and optional Gmail API email delivery.
 
-## 4. Key Features
+The backend rechecks document access for each operation. Administrators can inspect metadata and revoke grants; the administrative document APIs do not provide a general file-content bypass.
 
-- Email-verified signup with a pending application and inactive account until approval.
-- Administrator, Owner, and Viewer roles; role checks are enforced by the API.
-- One-time Administrator bootstrap from environment configuration.
-- Argon2 password hashing and signed, short-lived JWT access tokens.
-- Purpose-separated signup and password-reset OTPs, hashed at rest and limited by expiry, attempt count, resend cooldown, and hourly send quota.
-- Selectable email delivery with plain-text and HTML bodies; Mailpit/SMTP locally and Gmail API over HTTPS for compatible production hosts.
-- Administrator APIs for dashboard statistics, users, applications, approvals/rejections, role changes, account states, and audit records.
-- Single-use password-reset authorization and access-token invalidation after password reset.
-- Interchangeable private local filesystem and Supabase Storage providers for supported document formats, with server-side signature/MIME/size validation and UUID-based object keys.
-- Authorized document search, category/date filters, pagination, metadata, backend-streamed downloads, and recoverable deletion.
-- Explicit, expiring per-document READ/EDIT grants to active, verified users in the document owner's organization, immediate revocation, and sharing history. Legacy VIEWER/EDITOR records map to READ/EDIT. Legacy delegated OWNER grants do not confer permission administration or deletion.
-- Administrator-only organization creation and user assignment. Membership is never inferred from email domains; existing users remain unassigned after migration.
-- Document version history with retained previous versions, authorized historical downloads, soft deletion and owner restore.
-- Document upload, owned/shared-with-me/shared-by-me/deleted, search, category, and administrator metadata/audit pages.
-- Document activity records for uploads, reads/previews, sharing, permission changes/revocation, metadata changes, versions, deletion/restore, and denied access.
-- Pytest integration/security tests, a Playwright smoke-test scaffold, and GitHub Actions checks.
+## Technology
 
-Document access remains deny-by-default: non-owners need a current explicit grant, and visibility flags alone do not grant access. Owners upload and manage their own documents; Viewers see only documents explicitly shared with them. Administrators can view metadata and audit records and revoke grants, but cannot read document bytes through administrative APIs. Upload restrictions and supported formats are enforced by the backend.
+| Component | Technology |
+|---|---|
+| Web client | React 18, TypeScript, Vite, React Router, Axios |
+| API | Python 3.12, FastAPI, Pydantic 2 |
+| Database | PostgreSQL, SQLAlchemy 2, Psycopg 3 |
+| Migrations | Alembic |
+| Password/JWT | `pwdlib` Argon2, `python-jose` JWT |
+| Storage | Private local filesystem or Supabase Storage REST API |
+| Email | SMTP/Mailpit or optional Gmail API |
+| Automation | Docker Compose, GitHub Actions, pytest, Playwright scaffold |
 
-## 5. Technology Stack
+## Architecture
 
-| Area | Technology |
-| --- | --- |
-| Backend runtime/API | Python 3.12, FastAPI, Uvicorn |
-| Validation/configuration | Pydantic 2, pydantic-settings, email-validator |
-| Persistence | PostgreSQL, SQLAlchemy 2, Psycopg 3 |
-| Schema migrations | Alembic |
-| Authentication/security | JWT via `python-jose`, Argon2 via `pwdlib`, HMAC OTP digests |
-| Backend tests | Pytest, HTTPX, AnyIO; in-memory SQLite test database |
-| Frontend | React 18, TypeScript, Vite, React Router, Axios |
-| Styling | Tailwind CSS, PostCSS, Autoprefixer |
-| Browser tests | Playwright with TypeScript |
-| Local email | Mailpit over SMTP |
-| Containers/CI | Docker, Docker Compose, GitHub Actions |
+![VaultTrace system architecture](docs/assets/system-architecture.svg)
 
-## 6. System Architecture
+### Visual overviews
 
-```mermaid
-flowchart LR
-  Browser[React + TypeScript + Vite] -->|JSON API / Bearer JWT| API[FastAPI API v1]
-  API --> Services[Authentication and admin services]
-  Services --> Models[SQLAlchemy models]
-  Models --> DB[(PostgreSQL metadata)]
-  Services -->|Authorized private file operations| Storage[Local private directory or Supabase private bucket]
-  Services --> Email[Mailpit SMTP or Gmail API HTTPS]
-  API -->|Alembic schema revisions| DB
-```
+These explanatory illustrations are based on source code and deployment files; they are not screenshots of a running product.
 
-The backend is layered into API routes, dependencies/security, database access, ORM models, Pydantic schemas, and service modules. Routes validate/translate HTTP requests; registration, OTP, authentication, and administrator business logic resides in services. The frontend calls the API through `frontend/src/services/api.ts`.
+| Overview | Illustration |
+|---|---|
+| Authentication and security | ![Authentication and security controls](docs/assets/authentication-security.svg) |
+| Document lifecycle | ![Document lifecycle](docs/assets/document-lifecycle.svg) |
+| Deployment target | ![Deployment overview; Render configuration is operator-managed](docs/assets/deployment-overview.svg) |
+| Enterprise security layers | ![Implemented controls and recommended additions](docs/assets/enterprise-security-layers.svg) |
 
-## 7. Project Folder Structure
+The browser calls the FastAPI JSON API with bearer tokens. API routes delegate business rules to services, SQLAlchemy persists identity and document metadata in PostgreSQL, and authorized storage operations access the configured private file provider. See [Architecture](docs/ARCHITECTURE.md) for the Mermaid system, auth, document, sharing, email, and security diagrams and [Database](docs/DATABASE.md) for the ER diagram.
 
-```text
-VaultTrace/
-├── .env.example
-├── .github/workflows/ci.yml
-├── .gitignore
-├── LICENSE
-├── PROMPTS.md
-├── README.md
-├── THREATS.md
-├── docker-compose.yml
-├── requirements.txt
-├── backend/
-│   ├── Dockerfile
-│   ├── alembic.ini
-│   ├── alembic/
-│   │   ├── env.py
-│   │   ├── script.py.mako
-│   │   └── versions/
-│   │       ├── 20261103_0001_auth_foundation.py
-│   │       ├── 20261103_0002_registration_admin.py
-│   │       ├── 20261103_0003_email_verifications.py
-│   │       ├── 20261103_0004_documents.py
-│   │       ├── 20261104_0005_storage_provider.py
-│   │       ├── 20261104_0006_user_updated_at.py
-│   │       ├── 20261104_0007_user_updated_at_default.py
-│   │       ├── 20261104_0008_document_access_versions.py
-│   │       └── 20261104_0009_organizations.py
-│   ├── app/
-│   │   │   ├── __init__.py
-│   │   │   ├── api/{__init__.py,dependencies.py}
-│   │   │   ├── api/v1/{__init__.py,router.py,admin.py,documents.py}
-│   │   ├── bootstrap_admin.py
-│   │   ├── core/{__init__.py,config.py,security.py}
-│   │   ├── db/{__init__.py,base.py,session.py}
-│   │   ├── main.py
-│   │   ├── models/{__init__.py,user.py,role.py,organization.py,registration_application.py,email_verification.py,otp_challenge.py,revoked_token.py,audit_log.py,document.py}
-│   │   ├── schemas/{__init__.py,auth.py,admin.py,health.py,documents.py}
-│   │   ├── seed_roles.py
-│   │   ├── services/{__init__.py,auth.py,admin.py,registrations.py,otp.py,email.py,email_verifications.py,health.py,document_validation.py,documents.py,document_collaboration.py,storage.py}
-│   │   └── utils/{__init__.py,identifiers.py}
-│   └── tests/{__init__.py,client.py,conftest.py,database.py,test_auth_api.py,test_email_verifications.py,test_security.py,test_documents.py,test_storage_providers.py}
-└── frontend/
-    ├── Dockerfile
-    ├── e2e/smoke.spec.ts
-    ├── index.html
-    ├── package.json
-    ├── package-lock.json
-    ├── playwright.config.ts
-    ├── postcss.config.js
-    ├── src/
-    │   ├── App.tsx
-    │   ├── main.tsx
-    │   ├── styles.css
-    │   ├── vite-env.d.ts
-    │   ├── components/{AdminLayout.tsx,UserLayout.tsx,DocumentAccessDialog.tsx,DocumentPreviewDialog.tsx,OtpInput.tsx,OtpVerification.tsx,PasswordConfirmation.tsx,Placeholder.tsx}
-    │   ├── context/AppContext.tsx
-    │   ├── hooks/useHealth.ts
-    │   ├── pages/{AdminApplicationsPage.tsx,AdminDashboardPage.tsx,AdminDocumentsPage.tsx,AdminUsersPage.tsx,DashboardPage.tsx,DocumentsPage.tsx,DocumentUploadPage.tsx,DocumentSearchPage.tsx,DocumentCategoriesPage.tsx,SharedWithMePage.tsx,SharedByMePage.tsx,DeletedDocumentsPage.tsx,ForgotPasswordPage.tsx,HomePage.tsx,LoginPage.tsx,ResetPasswordPage.tsx,SignupPage.tsx}
-    │   ├── services/api.ts
-    │   ├── types/index.ts
-    │   └── utils/format.ts
-    ├── tailwind.config.js
-    ├── tsconfig.json
-    └── vite.config.ts
-```
+### Authentication and documents
 
-There is no PostgreSQL service in `docker-compose.yml`; development uses an existing local PostgreSQL server. Brace groups above abbreviate sibling files. `PasswordResetAuthorization` is a model class in `email_verification.py`, not a separate file.
+Applicants verify an email OTP, submit a registration application, and wait for an Administrator to assign the Owner or Viewer role. Login returns a short-lived JWT; protected API requests check its signature, expiry, revocation state, account state, and token version. See [Authentication flow](docs/ARCHITECTURE.md#authentication-lifecycle).
 
-## 8. Prerequisites and Software Requirements
+Owners upload validated documents. PostgreSQL stores metadata and object references; private storage holds the bytes. Owners can create versions, soft-delete and restore documents, and grant same-organization users time-limited READ/EDIT access. The backend checks current grants for each read or edit. See [Document lifecycle](docs/ARCHITECTURE.md#document-upload-and-download), [sharing flow](docs/ARCHITECTURE.md#sharing-and-authorization), and [database relationships](docs/DATABASE.md#entity-relationship-diagram).
 
-- Python 3.12.
-- PostgreSQL server and a database/role accessible to the configured `DATABASE_URL`.
+## Quick start
+
+### Requirements
+
+- Python 3.12 and PostgreSQL reachable from the backend.
 - Node.js 20 or newer and npm.
-- Git.
-- Optional: Docker Engine/Desktop with the Compose plugin for Mailpit and the development containers.
+- Optional: Docker Engine and Compose for Mailpit and the application containers.
 
-## 9. Installation Instructions
+### Configure local environment
 
-Clone the repository and open a terminal in the repository root. Do not replace an existing `.env` or change an existing PostgreSQL username, password, or database just to match the examples.
+Copy the example only when a root `.env` does not already exist. Edit the new file with local values; do not overwrite an existing environment file.
 
-Create a Python virtual environment and install backend dependencies.
+```bash
+test -f .env || cp .env.example .env
+```
 
-**Linux/macOS:**
+Set at least `DATABASE_URL` and a strong random `JWT_SECRET_KEY`. For local storage, `STORAGE_PROVIDER=local` is the default outside production. `.env.example` documents the other settings and their defaults. Never put secrets in `VITE_*` variables.
+
+## Environment variables
+
+The full variable list and non-secret examples are in [`.env.example`](.env.example). Backend-only secrets include database/JWT/OTP, SMTP or Gmail OAuth, Supabase service-role, and bootstrap credentials. `VITE_*` variables are embedded into browser assets and must contain public configuration only. See [Deployment](docs/DEPLOYMENT.md#render-deployment-shape) for the production frontend/backend split.
+
+### Start the backend
+
+From the repository root:
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+alembic -c backend/alembic.ini upgrade head
+uvicorn app.main:app --reload --app-dir backend
 ```
 
-**Windows PowerShell:**
+The database must already exist and be reachable through `DATABASE_URL`. Alembic applies schema migrations; it does not copy local user or document records to another database. If the virtual environment is named differently, activate that environment instead.
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-If PowerShell blocks activation, allow it for the current terminal only with `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then activate again.
-
-Install frontend dependencies from `frontend/`:
-
-```bash
-cd frontend
-npm ci
-```
-
-PowerShell uses the same `cd frontend` and `npm ci` commands.
-
-## 10. Environment Variable Configuration (`.env.example`)
-
-Create `.env` only if one does not already exist:
-
-```bash
-# Linux/macOS
-test -f .env || cp .env.example .env
-```
-
-```powershell
-# Windows PowerShell
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-```
-
-Edit `.env` locally. Replace placeholders with values for your environment; generate unique random `JWT_SECRET_KEY` and `OTP_HASH_SECRET` values. Do not commit `.env` or paste its contents into issues. `.gitignore` ignores `.env*` while allowing `.env.example`.
-
-| Variable | Purpose |
-| --- | --- |
-| `APP_NAME`, `APP_ENV` | Application label and environment label. |
-| `API_HOST`, `API_PORT` | API host/port settings; the local Uvicorn command below supplies explicit values. |
-| `DATABASE_URL` | SQLAlchemy PostgreSQL URL, e.g. `postgresql+psycopg://USER:PASSWORD@localhost:5432/DB_NAME`. Use the actual existing local PostgreSQL credentials. URL-encode reserved characters in the password. |
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Reference placeholders for manually provisioning a local database; the Compose file does not define a PostgreSQL service and the backend connects through `DATABASE_URL`. |
-| `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` | JWT signing configuration; the default algorithm is HS256 and default access-token lifetime is 15 minutes. |
-| `OTP_HASH_SECRET` | Separate secret used to HMAC OTPs; the code falls back to the JWT secret if this is unset. Configure a distinct random value. |
-| `OTP_EXPIRATION_MINUTES`, `OTP_MAX_ATTEMPTS`, `OTP_RESEND_COOLDOWN_SECONDS`, `OTP_MAX_SENDS_PER_HOUR` | OTP expiry and rate-limit configuration; defaults are 5 minutes, 5 attempts, 60 seconds, and 5 sends/hour. |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Backend SMTP connection and optional authentication. Mailpit defaults are host `localhost`, port `1025`, with no credentials. |
-| `SMTP_FROM`, `SMTP_STARTTLS`, `SMTP_USE_SSL` | SMTP sender and legacy TLS/SSL configuration passed by the current Compose backend service. |
-| `SMTP_FROM_EMAIL`, `SMTP_USE_TLS` | Sender/TLS configuration aliases read by the backend when running directly. Use the correct TLS mode for the selected SMTP provider. |
-| `EMAIL_PROVIDER` | Optional email transport selector: `mailpit` (default, existing SMTP/Mailpit implementation) or `gmail_api` (Gmail HTTPS API). |
-| `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_SENDER_EMAIL` | Backend-only Gmail OAuth settings, required only when `EMAIL_PROVIDER=gmail_api`. Keep client secret and refresh token in Render secret settings and out of logs/source. |
-| `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | Lifetime of reset authorization; default is 10 minutes. |
-| `STORAGE_PROVIDER` | Selects `local` or `supabase`. Defaults to `local` outside production and `supabase` for `APP_ENV=production` if omitted; production explicitly rejects `local`. Selection never falls back when the chosen provider is unavailable. |
-| `LOCAL_STORAGE_PATH` | Private backend-managed directory; defaults to `./private_storage`. It is ignored by Git, excluded from frontend static paths, and persisted by Compose through a private volume. |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase project URL and service-role key. Required when `STORAGE_PROVIDER=supabase`; never expose either as a `VITE_` variable. |
-| `SUPABASE_STORAGE_BUCKET` | Existing private bucket name; defaults to `vaulttrace-documents`. The backend refuses missing or public buckets. |
-| `DOCUMENT_MAX_UPLOAD_BYTES`, `DOCUMENT_ALLOWED_EXTENSIONS` | Backend upload limit (default 5 MiB) and extension allowlist; the server validates content and MIME too. |
-| `VITE_DOCUMENT_MAX_UPLOAD_BYTES`, `VITE_DOCUMENT_ALLOWED_EXTENSIONS` | Non-secret frontend hints for pre-upload size/extension feedback. The backend settings remain authoritative. |
-| `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_USERNAME`, `ADMIN_BOOTSTRAP_PASSWORD`, `ADMIN_BOOTSTRAP_FULL_NAME` | Credentials/profile for the explicit initial-admin bootstrap command. The password must be at least 12 characters. The command creates an administrator only if none exists and does not reset existing admins. |
-| `FRONTEND_ORIGIN`, `VITE_API_BASE_URL` | Backend CORS origin and frontend API base URL; defaults target local Vite/FastAPI ports. |
-
-For SMTP, Mailpit is a local capture service: messages appear in its web inbox and are not forwarded to a real mailbox. For real delivery, configure a legitimate SMTP provider in the backend environment. Never put SMTP credentials in Vite variables or frontend source.
-
-## 11. Database Setup and Migration
-
-Use an existing PostgreSQL database when available. For a **new, empty development database only**, connect to PostgreSQL as an administrator and create a role/database (choose and securely set a password interactively):
-
-```sql
-CREATE ROLE vaulttrace LOGIN;
-\password vaulttrace
-CREATE DATABASE vaulttrace OWNER vaulttrace;
-```
-
-Then set `DATABASE_URL` in `.env` to use that role/database. Do not run the creation statements against an existing production or shared database. If a password contains URL-reserved characters, URL-encode it in `DATABASE_URL`.
-
-Check connectivity before migrating:
-
-```bash
-pg_isready -h localhost -p 5432
-```
-
-Apply the current Alembic revisions from the repository root:
-
-```bash
-# Linux/macOS
-PYTHONPATH=backend python -m alembic -c backend/alembic.ini upgrade head
-```
-
-```powershell
-# Windows PowerShell
-$env:PYTHONPATH = "backend"
-python -m alembic -c backend/alembic.ini upgrade head
-```
-
-The migrations create the roles/users/auth tables, registration applications and audit records, then purpose-scoped `email_verifications` and `password_reset_authorizations` tables and `users.token_version`. Commit 2 adds revisions `20261103_0004_documents` and `20261104_0005_storage_provider`. Revisions `20261104_0006_user_updated_at` and `20261104_0007_user_updated_at_default` add/populate the user update timestamp. Revision `20261104_0008_document_access_versions` adds per-document visibility, recoverable deletion, immutable versions, explicit permission grants, and document activity records; it backfills version 1 metadata for existing documents without changing document IDs or stored objects. Revision `20261104_0009_organizations` creates `organizations` and nullable `users.organization_id`; existing users are deliberately left unassigned. These additive revisions preserve existing user/document records and file bytes. Review the target database and back it up before applying migrations.
-
-Seed missing built-in roles (idempotent):
-
-```bash
-# Linux/macOS
-PYTHONPATH=backend python -m app.seed_roles
-```
-
-```powershell
-# Windows PowerShell; set PYTHONPATH in the same terminal first
-$env:PYTHONPATH = "backend"
-python -m app.seed_roles
-```
-
-## 12. How to Run the Project Locally
-
-Start Mailpit if you want to inspect locally generated OTP emails:
-
-```bash
-docker compose up -d mailpit
-```
-
-Mailpit SMTP is `localhost:1025`; the inbox UI is `http://localhost:8025`. If Docker is unavailable, configure another reachable SMTP server or email sends will fail.
-
-Configure the bootstrap administrator values in `.env`, then run the bootstrap once. If an administrator already exists, bootstrap reports that no change was made.
-
-**Linux/macOS, from the repository root:**
-
-```bash
-source .venv/bin/activate
-PYTHONPATH=backend python -m app.bootstrap_admin
-PYTHONPATH=backend python -m uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8000
-```
-
-**Windows PowerShell, from the repository root:**
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-$env:PYTHONPATH = "backend"
-python -m app.bootstrap_admin
-python -m uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8000
-```
+### Start the frontend
 
 In another terminal:
 
 ```bash
 cd frontend
-npm run dev
+npm ci
+npm run dev -- --host 127.0.0.1
 ```
 
-Open `http://localhost:5173`. The API is at `http://localhost:8000`; interactive OpenAPI documentation is at `http://localhost:8000/docs`; health check is `http://localhost:8000/health`. The backend does not automatically run Alembic migrations at application startup; apply migrations explicitly first.
+The default local API base URL is `http://localhost:8000/api/v1`. Set `VITE_API_BASE_URL` before starting Vite if the API uses a different local URL.
 
-### Single-command development containers
+### Windows PowerShell note
 
-After PostgreSQL is running, `.env` is configured, and migrations/bootstrap are complete, Docker Compose can start the configured development services with:
+From the repository root, create and activate the environment with `py -3.12 -m venv .venv` and `.\.venv\Scripts\Activate.ps1`, then install with `python -m pip install -r requirements.txt`. Start the backend with `$env:PYTHONPATH='backend'; uvicorn app.main:app --reload --app-dir backend`. In another terminal, use `cd frontend; npm ci; npm run dev`. Docker Compose uses `network_mode: host` for the backend and is intended for Linux; it is not a portable Windows/macOS network setup.
+
+## Database and migrations
+
+There are ten sequential migrations, from `20261103_0001` to `20261105_0010`. Inspect the current revision and local head with:
+
+```bash
+alembic -c backend/alembic.ini current
+alembic -c backend/alembic.ini heads
+```
+
+Apply migrations only after confirming the target URL and reviewing the migration plan:
+
+```bash
+alembic -c backend/alembic.ini upgrade head
+```
+
+Alembic uses `DATABASE_URL` by default. Production selection is an explicit setting: set `ALEMBIC_USE_PRODUCTION_DATABASE=true` and `PRODUCTION_DATABASE_URL` in the migration process environment. Keep runtime and migration credentials controlled by the deployment operator. Do not paste connection URLs into shell transcripts or documentation. See [Database](docs/DATABASE.md) and [Deployment](docs/DEPLOYMENT.md).
+
+## Docker Compose
+
+The Compose file starts Mailpit, the backend, and the Vite development server. It does **not** start PostgreSQL; configure an existing database first.
 
 ```bash
 docker compose up --build
 ```
 
-This starts Mailpit, the FastAPI container, and the Vite development container. It does **not** start PostgreSQL. The backend uses `network_mode: host`; this is designed around Linux host networking and may need networking changes on Docker Desktop for Windows/macOS. For those platforms, the local Python/Node commands above are the documented path. The container images run development servers, not production serving stacks.
+Local endpoints are typically:
 
-## 13. API Documentation with Examples
+- Frontend: `http://localhost:5173`
+- API: `http://localhost:8000`
+- FastAPI OpenAPI UI: `http://localhost:8000/docs`
+- Mailpit inbox: `http://localhost:8025`
 
-All versioned routes use `http://localhost:8000/api/v1`. OpenAPI UI is available at `/docs` while the backend runs.
+The Compose backend uses host networking, so the `SMTP_HOST` and database host must be reachable from the host network. Stop with `Ctrl-C`, then use `docker compose down`. Compose does not run Alembic automatically.
 
-### Authentication and signup
+## Tests
 
-| Method and path | Authentication | Purpose |
-| --- | --- | --- |
-| `POST /auth/signup/send-otp` | Public | Request a signup OTP. Returns a generic message; the OTP is delivered by email, never in the response. |
-| `POST /auth/signup/verify-otp` | Public | Verify a six-digit signup OTP. |
-| `POST /auth/register` | Public, but requires verified email proof | Create an inactive PENDING account/application. |
-| `POST /auth/login` | Public | Authenticate and receive a bearer access token. Pending, rejected, inactive, or suspended accounts cannot log in. |
-| `POST /auth/logout` | Bearer token | Revoke the current access token. |
-| `GET /users/me` | Bearer token | Return the current user profile. |
-| `POST /auth/forgot-password` | Public | Send a reset OTP where eligible; response is generic to avoid email enumeration. |
-| `POST /auth/verify-reset-otp` | Public | Verify the reset OTP and receive a short-lived reset authorization. |
-| `POST /auth/reset-password` | Reset authorization in request body | Consume authorization and set a new password. |
-| `GET /health` | Public, outside `/api/v1` | Return process health status. |
-
-Example signup OTP request (Linux/macOS; replace the example address):
+Run the backend test suite from the repository root after configuring the test environment:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/signup/send-otp \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"person@example.com"}'
-```
-
-Windows PowerShell equivalent:
-
-```powershell
-$body = @{ email = 'person@example.com' } | ConvertTo-Json
-Invoke-RestMethod -Uri 'http://localhost:8000/api/v1/auth/signup/send-otp' -Method Post -ContentType 'application/json' -Body $body
-```
-
-OTP verification body:
-
-```json
-{"email":"person@example.com","otp":"123456"}
-```
-
-Registration body (send only after successful OTP verification):
-
-```json
-{
-  "full_name": "Example Person",
-  "username": "example-person",
-  "email": "person@example.com",
-  "phone_number": null,
-  "password": "replace-with-a-12-character-or-longer-password",
-  "confirm_password": "replace-with-a-12-character-or-longer-password"
-}
-```
-
-Passwords are validated to 12–128 characters and confirmation must match. User role is not accepted from the public registration payload. A successful response has HTTP 201 and includes the application ID and `PENDING` status.
-
-Login request:
-
-```json
-{"email":"admin@example.com","password":"your-local-admin-password"}
-```
-
-The response includes `access_token`, `token_type`, expiry, and public user data including role. Use the token in protected API requests:
-
-```bash
-curl http://localhost:8000/api/v1/admin/dashboard \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-Reset request bodies:
-
-```json
-{"email":"person@example.com"}
-```
-
-```json
-{"email":"person@example.com","otp":"123456"}
-```
-
-```json
-{
-  "authorization_token": "token-returned-by-verify-reset-otp",
-  "password": "new-password-at-least-12-characters",
-  "confirm_password": "new-password-at-least-12-characters"
-}
-```
-
-### Administrator APIs
-
-All `/admin` routes require an authenticated Administrator. User and application list APIs accept `limit` (1–100, default 50) and `offset` (default 0). `GET /admin/applications` filters `approval_status` and defaults to `PENDING`.
-
-| Method and path | Description |
-| --- | --- |
-| `GET /admin/dashboard` | PostgreSQL-backed counts: registered, active, pending, approved, rejected, Owners, and Viewers. |
-| `GET /admin/users` | Paginated user list with role, verification, state, registration date, and last update timestamp. |
-| `GET /admin/applications` | Paginated applications, pending by default; filter `PENDING`, `APPROVED`, or `REJECTED`. |
-| `GET /admin/applications/{application_id}` | Application details. |
-| `POST /admin/applications/{application_id}/approve` | JSON body `{"role":"Owner"}` or `{"role":"Viewer"}`. Activates account and records reviewer/audit data. |
-| `POST /admin/applications/{application_id}/reject` | JSON body `{"reason":"Review reason"}`. Deactivates account and records reviewer/reason/audit data. |
-| `PATCH /admin/users/{user_id}/role` | JSON body `{"role":"Owner"}` or `{"role":"Viewer"}`. |
-| `PATCH /admin/users/{user_id}/status` | JSON body `{"status":"ACTIVE"}`, `INACTIVE`, or `SUSPENDED`. |
-
-Approval/rejection notifications are attempted by email; the action response reports whether notification delivery succeeded. Administrator roles cannot be assigned through the user role API, and administrator accounts are protected from these changes.
-
-Account changes are persisted with an additive `users.updated_at` column (Alembic revision `20261104_0006`). Status and role updates use row locks scoped to the `users` table, audit the actor/target, previous and new values, timestamp, and successful result in the same transaction. These changes also increment `token_version`; the next request with an older JWT is rejected. Pending users may be activated only after email verification and application approval; rejected users cannot be reactivated through account management. Administrators and the acting administrator's own account are protected. Database exceptions return HTTP 503 with a safe connectivity message; raw connection details are not returned. Apply the migration before starting an app version that expects `updated_at`.
-
-The older compatibility endpoints `POST /auth/otp/request`, `/auth/otp/resend`, and `/auth/otp/verify` are also present. New clients should use the purpose-specific signup endpoints above.
-
-### Commit 4 — Audit Trail
-
-The Administrator workspace has a dedicated **Audit Trail** route at `/admin/audit-trail`. It loads summary counts and paginated events from PostgreSQL, supports actor, organization, action, outcome, date, resource, and text filters, opens an event detail dialog, and exports a bounded CSV. It shows loading, empty, error, and export feedback states. The navigation item is present only in the Administrator layout, and `ProtectedAdmin` redirects non-administrators; the API independently enforces the Administrator role.
-
-The application writes audit rows through `app.services.audit.record_audit_event()`. Supported recorded events include bootstrap administrator creation, successful/failed login, logout, password reset, account registration and administrator approval/rejection, user role/status and organization changes, document upload/download/preview/version upload/metadata change/soft delete/restore, permission grant/change/revocation, and authenticated document access denials. Events are committed with the operation where the service transaction supports it. Failed-login events contain the attempted email but never the submitted password. Audit metadata removes sensitive-key values such as passwords, OTPs, tokens, storage keys and URLs. The existing `document_activities` store remains the source for the per-document activity view; `audit_logs` is the global admin-facing record.
-
-Administrator-only endpoints (all under `/api/v1`):
-
-| Method and path | Purpose |
-| --- | --- |
-| `GET /admin/audit-logs` | Paginated, sorted audit events. Filters: `user_id`, `resource_id`, `action`, `outcome`, `organization_id`, `date_from`, `date_to`, and `search`; pagination uses `limit` (1–100) and `offset`. |
-| `GET /admin/audit-logs/{event_id}` | One safe event projection. |
-| `GET /admin/audit-logs/summary` | Event, success, failure, and distinct actor counts for the supplied filters/date period. |
-| `GET /admin/audit-logs/export.csv` | CSV export, default maximum 5,000 and hard maximum 10,000 matching events; formula-prefixed spreadsheet cells are escaped. |
-
-Audit records have no application update/delete API. They are ordinary PostgreSQL rows, not cryptographically tamper-evident: database administrators or compromised database credentials can still alter them. Revision `20261105_0010` additively extends existing `audit_logs` fields and indexes; it does not recreate the table or delete prior rows. After reviewing and backing up the intended database, apply it with `PYTHONPATH=backend likitha/bin/alembic -c backend/alembic.ini upgrade head` (Windows PowerShell: set `$env:PYTHONPATH = "backend"` and run `likitha\Scripts\alembic.exe -c backend\alembic.ini upgrade head`, adjusted to the virtual environment path). Downgrade refuses when anonymous audit events exist because reverting would violate the prior non-null actor constraints.
-
-The Administrator API requires a bearer token. Missing/invalid tokens return HTTP 401 and other roles return HTTP 403. Owners, Editors (where represented as a role), and Viewers have no read, export, update, or delete access to these routes. Their document-level activity remains subject to the existing document authorization rules.
-
-## 14. Authentication and Authorization Details
-
-- Passwords are stored as Argon2 hashes using `pwdlib`; plaintext passwords are not persisted.
-- Login issues a signed JWT access token (HS256 by default, 15-minute default lifetime). Send it as `Authorization: Bearer <token>`.
-- Logout records the JWT ID as revoked. Password reset increments `users.token_version`, invalidating earlier access tokens for that user.
-- FastAPI loads the current user from PostgreSQL and enforces role checks. Frontend route guards are for navigation only and are not an authorization boundary.
-- Registration is public but requires an unexpired, verified signup proof; new users are `PENDING` and inactive until administrator approval.
-- Roles are Administrator, Owner, and Viewer. Application approval can assign Owner or Viewer; public users cannot choose a role.
-- The frontend keeps authentication state in React memory; it does not persist access tokens to local storage. Refreshing the page requires signing in again. No refresh-token API is currently implemented.
-
-## Document management and authorization
-
-PostgreSQL stores document metadata, the opaque storage key, and a `storage_provider` label. File bytes are in the selected provider. Set `STORAGE_PROVIDER=local` for local development; files go to `LOCAL_STORAGE_PATH` (default `./private_storage`), outside frontend public/static paths, with restrictive directory/file permissions. This directory is not mounted by an HTTP static route. Local provider keys are relative, traversal-checked, and generated from owner ID + UUID by the document service.
-
-For deployment, set `STORAGE_PROVIDER=supabase`, create a **private** bucket called `vaulttrace-documents` (or set `SUPABASE_STORAGE_BUCKET`), and configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` only in the backend environment. The Supabase provider refuses missing credentials or a missing/public bucket; it never falls back to local storage. Both providers implement the same upload/download/delete/exists interface. Each download/delete uses the provider stored on that specific document, so changing the selection affects new uploads without silently switching old records.
-
-The default allowlist is PDF, PNG, JPEG, TXT, CSV, DOCX, and XLSX, with a 5 MiB maximum (`DOCUMENT_MAX_UPLOAD_BYTES` and `DOCUMENT_ALLOWED_EXTENSIONS`). The document service checks actual content signatures and supplied MIME type before calling either provider, uses owner ID + UUID keys, calculates SHA-256 checksums, and attempts cleanup if metadata persistence fails. Downloads are authorized and streamed by FastAPI. API metadata responses do not include provider names, bucket names, or storage keys.
-
-Access is deny-by-default. An owner can share a document only with an active, verified registered account assigned to the same organization. The owner searches eligible recipients by email or username, then grants READ or EDIT with an optional expiration. Email domains do not establish membership. Administrators create organizations and explicitly assign/unassign user membership through `/admin/organizations` and `/admin/users/{user_id}/organization`. Existing users stay unassigned until an administrator performs that action; unassigned users cannot share or receive shared access. A public visibility label does not create public access; a current permission row and same-organization membership are both required. Revocation, expiry, organization mismatch, soft deletion, or changing visibility to `PRIVATE` removes access on the next backend authorization check. READ permits metadata, preview, download, and version history. EDIT also permits metadata edits and new versions. Only the actual document owner manages permissions, deletes/restores, and reviews document activity. Legacy `VIEWER`/`EDITOR` values are interpreted as READ/EDIT; legacy delegated `OWNER` grants provide at most EDIT and never permission administration or ownership. Administrator status alone does not allow reading document content. Current database state is checked on protected requests; no authorization cache is used.
-
-| Method and path | Description |
-| --- | --- |
-| `POST /documents/upload` | Multipart fields: `file`, `document_name`, `category`, optional `description` and `visibility`; Owner role required. |
-| `GET /documents/` | Documents owned by the caller; supports search, category/date, pagination, and sorting. |
-| `GET /documents/search` | Search by UUID/name/original filename with category/type/owner/visibility/access/date filters; results are limited to owned and explicitly shared documents. |
-| `GET /documents/categories`, `/shared-with-me`, `/shared-by-me`, `/deleted` | Authorized category, incoming grant, outgoing grant, or recoverable deletion lists. |
-| `GET /documents/{document_id}` | Metadata for owner or a user with a live grant. |
-| `GET /documents/{document_id}/eligible-users?q=...` | Active, verified accounts in the actual owner's organization; requires document ownership. |
-| `GET /documents/{document_id}/preview` and `/download` | Authorized private stream; preview supports safe browser-renderable types, downloads verify checksums. |
-| `PATCH /documents/{document_id}` | Change metadata; changing visibility to PRIVATE revokes active grants. |
-| `GET/POST /documents/{document_id}/versions`, `GET /documents/{document_id}/versions/{version_id}/download` | List versions, upload a new immutable version, or download an authorized historical version. |
-| `GET/POST /documents/{document_id}/permissions`, `PATCH/DELETE /documents/{document_id}/permissions/{permission_id}` | Actual owner lists, grants, updates, or revokes READ/EDIT access. Grant body takes `recipient_user_id`, a permission level, and optional `expires_at`. |
-| `GET /documents/{document_id}/activity`, `POST /documents/{document_id}/restore`, `DELETE /documents/{document_id}` | Actual owner reviews activity, restores, or soft-deletes. Stored bytes remain private after soft-delete. |
-| `GET /admin/documents`, `/admin/documents/permissions`, `/admin/documents/audit`, `DELETE /admin/documents/permissions/{permission_id}` | Administrator-only metadata/permission/audit review and emergency permission revocation; these routes do not return file bytes. |
-| `GET/POST /admin/organizations`, `PATCH /admin/users/{user_id}/organization` | Administrator-only organization listing/creation and explicit user assignment (`{"organization_id": 7}`) or unassignment (`null`). |
-
-The initial upload is recorded as V1. The version list includes uploader name, original filename, timestamp, and stored file size, ordered newest first. A document with one version shows V1 and a single-version message; a genuinely empty version query shows an empty state. Version list and download requests recheck current READ permission, including grant expiry and revocation. A backend connection failure remains a visible network error and is not treated as an empty history.
-
-Example:
-
-```bash
-curl 'http://localhost:8000/api/v1/documents/?category=finance&limit=20' \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-Mocked provider tests need no Supabase credentials. `local` can be exercised with a private filesystem directory. Live Supabase upload/download requires a configured private bucket. Document collaboration tests use isolated SQLite and mocked storage. The live PostgreSQL migration and real storage-provider workflow must still be validated in the target development environment before release.
-
-### Moving local files to Supabase
-
-Provider migration is an explicit maintenance task; changing `STORAGE_PROVIDER` alone does not copy files. Stop writes or place the application in maintenance mode, back up PostgreSQL and the local storage directory, and verify every source object's size and checksum against its metadata. Copy each local object's bytes to the same UUID-based `storage_key` in the private Supabase bucket. Verify the destination bytes/checksum before updating that document row's `storage_provider` to `supabase` and `storage_bucket` to the configured bucket in a transaction. Keep IDs and all other metadata unchanged. Resume writes only after verifying migrated rows; remove local copies only after a separate backup/retention period. On any copy or verification failure, leave the database row labeled `local` and retry or roll back the copied destination object. For a large library, implement a reviewed resumable migration tool before starting this process.
-
-## 15. Testing Instructions
-
-Backend tests use an isolated in-memory SQLite database and mock SMTP. They do not use your development PostgreSQL database or send email.
-
-```bash
-# Linux/macOS, from repo root with the venv activated
 PYTHONPATH=backend python -m pytest backend/tests -q
 ```
 
-```powershell
-# Windows PowerShell
-$env:PYTHONPATH = "backend"
-python -m pytest backend/tests -q
-```
-
-Frontend production build/typecheck:
+The backend test harness uses an in-memory SQLite database (`backend/tests/database.py`); it does not migrate or copy local/production PostgreSQL data. Browser tests use Playwright and a local Vite server:
 
 ```bash
 cd frontend
-npm run build
-```
-
-Playwright smoke tests (the config starts the Vite dev server):
-
-```bash
-cd frontend
+npm ci
 npx playwright install chromium
 npm run test:e2e
 ```
 
-The checked-in Playwright tests cover sign-in/signup, role-specific dashboard navigation and redirects, distinct upload/search/category pages, and the Shared With Me empty state. The current GitHub Actions workflow runs backend bytecode compilation and frontend build; it does not run Pytest or Playwright. Browser tests require Node.js 20 or newer and an environment that allows the local Vite server to bind to its configured loopback address.
+Current GitHub Actions runs Python bytecode compilation and a frontend build. It does not run pytest or Playwright. See [Contributing](docs/CONTRIBUTING.md) for the recommended checks.
 
-## 16. Docker Setup
+## API documentation
 
-Docker Compose includes `mailpit`, `backend`, and `frontend`. It intentionally has no PostgreSQL service. The backend connects to the PostgreSQL server configured in `.env`; on Linux the backend container uses host networking. Local private files persist in the ignored `./private_storage` bind mount. Mailpit publishes SMTP `1025` and inbox UI `8025`; the frontend development server publishes `5173`.
+When the backend is running, FastAPI serves OpenAPI documentation at `/docs` and the schema at `/openapi.json`. The endpoint reference and real request examples are in [API Guide](docs/API_GUIDE.md). Production operators should decide whether interactive API documentation should be publicly reachable.
 
-Validate Compose configuration and start the development stack:
+## Known limitations and roadmap
 
-```bash
-docker compose config --quiet
-docker compose up --build
-```
+The repository does not configure Render, run a production frontend image, or define backups/restore automation. Login throttling, MFA, malware scanning, durable email queues, scheduled retention, and immutable external audit storage are not implemented. The prioritized improvement sequence is in [Roadmap](docs/ROADMAP.md).
 
-For just local email capture:
+## Troubleshooting
 
-```bash
-docker compose up -d mailpit
-```
+- **API cannot connect:** check that PostgreSQL is running/reachable and that `DATABASE_URL` uses the Psycopg 3 SQLAlchemy URL format shown in `.env.example`.
+- **Missing table or column:** compare Alembic `current` and `heads`; review migrations before running `upgrade head` against a shared or production database.
+- **Browser reports no API response/CORS:** set `VITE_API_BASE_URL` to the API base and `FRONTEND_ORIGIN` to the exact browser origin, then restart/rebuild the respective service.
+- **Signup email is not delivered:** check backend email provider selection and provider settings. Local Mailpit captures mail at `http://localhost:8025`; it does not forward mail externally.
+- **Production document storage errors:** verify `APP_ENV=production`, `STORAGE_PROVIDER=supabase`, the configured private bucket, and backend-only Supabase settings. The local storage provider is rejected in production mode.
+- **A Render service does not start:** check that the service binds to the configured port and `0.0.0.0`; current backend Docker command uses port 8000. See [Deployment](docs/DEPLOYMENT.md).
 
-Use Docker Engine/Desktop with Compose installed and running. The checked-in Dockerfiles run Uvicorn and Vite development servers; do not treat this Compose file as a hardened production deployment.
+## Contributing
 
-## 17. Gmail API Email Delivery
+Contributions should include appropriate tests and documentation, preserve server-side authorization, and exclude credentials and production data. See [Contributing](docs/CONTRIBUTING.md) for local checks and pull-request guidance.
 
-`EMAIL_PROVIDER=mailpit` is the default and uses the existing SMTP implementation. Keep this for local development with Mailpit (`localhost:1025`, inbox UI at `http://localhost:8025`). The SMTP variables and templates remain supported. Render Free web services block outbound SMTP ports 25, 465, and 587, so select `gmail_api` there to send through Google's HTTPS API instead. [Render Free service limits](https://render.com/docs/free).
-
-### Configure Google OAuth
-
-1. In Google Cloud Console, create or select a project and enable the **Gmail API**.
-2. Configure Google Auth Platform branding and audience. During development, use **Testing** and add the Gmail account that will send VaultTrace messages as a test user.
-3. Under **Data Access**, request only `https://www.googleapis.com/auth/gmail.send`. Gmail's `messages.send` method supports this scope. [Gmail API scope and method](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send).
-4. Create an OAuth client with application type **Desktop app** and download its JSON file into the repository root as `credentials.json`. This filename is Git-ignored. Do not commit or upload the downloaded file to Render.
-5. In a local Python environment with `requirements.txt` installed, run:
-
-   ```bash
-   python backend/scripts/generate_gmail_token.py --client-secrets credentials.json
-   ```
-
-   The utility opens a local browser consent flow with offline access and explicit consent. It writes only the client ID, client secret, refresh token, token URL, and scope to the ignored root file `.gmail_token.json`; it does not print token values. It is a separate, manually run tool and is never invoked at application startup. Keep both JSON files private.
-
-Google OAuth refresh tokens for external apps left in **Testing** expire after seven days for scopes such as `gmail.send`. Before relying on this for production, publish the OAuth app and complete any verification Google requires for the sensitive Gmail send scope. Testing mode also restricts authorization to listed test users. [Google refresh-token behavior](https://developers.google.com/identity/protocols/oauth2#expiration), [Testing audience limits](https://support.google.com/cloud/answer/15549945), [Gmail scope verification](https://developers.google.com/workspace/gmail/api/auth/scopes).
-
-### Configure the backend provider
-
-Set these Render backend variables; copy the credential fields from `.gmail_token.json` through a secure editor or secret manager, without putting them in source control:
+## Project structure
 
 ```text
-EMAIL_PROVIDER=gmail_api
-GMAIL_CLIENT_ID=<OAuth client ID>
-GMAIL_CLIENT_SECRET=<OAuth client secret>
-GMAIL_REFRESH_TOKEN=<OAuth refresh token>
-GMAIL_SENDER_EMAIL=<same Gmail account used to authorize>
+backend/app/api/           FastAPI dependencies and v1 routes
+backend/app/core/          Settings and password/JWT security helpers
+backend/app/models/        SQLAlchemy entities
+backend/app/schemas/       Pydantic request/response models
+backend/app/services/      Auth, OTP, admin, audit, document and storage logic
+backend/alembic/           Alembic configuration and migration history
+backend/tests/             Pytest API, service and security tests
+backend/scripts/           Local Gmail OAuth/test utilities
+frontend/src/pages/        User and administrator screens
+frontend/src/components/   Reusable forms, dialogs and layouts
+frontend/src/services/     Frontend API client
+frontend/e2e/              Playwright browser-test scaffold
+docs/                      Architecture, security, API, database and ops guides
+docker-compose.yml         Local Mailpit/API/Vite development services
 ```
 
-The sender must be the same Gmail account that authorized the refresh token. The API request uses that sender as `userId`, so Gmail rejects a credential/account mismatch. OAuth uses only the `gmail.send` scope. The Google auth library refreshes expired access tokens automatically. API errors are logged using only an exception type, HTTP status, and fixed diagnostic; messages, recipients, and OAuth tokens are not logged.
+## Security
 
-To return to local Mailpit delivery, use `EMAIL_PROVIDER=mailpit` (or omit the variable). SMTP settings remain available and unchanged. No database schema or migration is involved.
+Security controls and their limits are described in [Security](docs/SECURITY.md). Do not commit `.env`, `credentials.json`, `.gmail_token.json`, storage contents, access tokens, refresh tokens, or production URLs. Report suspected vulnerabilities privately to the project maintainers.
 
-## 18. Live Deployment Instructions
+## Documentation
 
-No live deployment target, hosting-provider configuration, production reverse proxy, or production Compose file is included. A deployment cannot be launched from this repository with a verified provider-specific command.
+- [Architecture and workflows](docs/ARCHITECTURE.md)
+- [Security controls and hardening](docs/SECURITY.md)
+- [API reference and examples](docs/API_GUIDE.md)
+- [Deployment guide](docs/DEPLOYMENT.md)
+- [Database schema and migrations](docs/DATABASE.md)
+- [Known limitations and roadmap](docs/ROADMAP.md)
+- [Contribution guide](docs/CONTRIBUTING.md)
 
-Before deploying, an operator should provision PostgreSQL and SMTP, configure secrets outside the repository, run reviewed Alembic migrations as a release step, serve a production frontend build from a static web server/CDN, run the API behind an HTTPS reverse proxy, configure exact CORS origins, backups, monitoring, and recovery procedures, and use production server/container settings rather than the development Dockerfiles. Validate role-change `PATCH` requests and CORS configuration for the chosen deployment topology before release.
+## License
 
-## 19. Demo Screenshots
+See [LICENSE](LICENSE) for the license terms.
 
-Screenshots are not currently included. Add reviewed, synthetic-data screenshots here when available; do not publish real user addresses, tokens, OTPs, or private document data.
+## Safe enhancement updates
 
-- Sign-in: _screenshot pending_
-- Signup and email verification: _screenshot pending_
-- Administrator dashboard: _screenshot pending_
-- Application review: _screenshot pending_
-- Private document workspace: _screenshot pending_
+- New account and reset passwords must be at least 12 characters and include an uppercase letter, a lowercase letter, a number, and a special character. The backend enforces the rule for signup, password reset, and both administrator bootstrap scripts; the frontend shows the same requirements and a live strength indicator.
+- Password fields are hidden by default and include keyboard-accessible show/hide controls. Login continues to accept existing passwords under the current creation policy so existing accounts are not locked out.
+- Upload progress is exposed accessibly to assistive technology. Invalid files are identified individually while other valid queued files can continue, and already uploaded files are not resent on a later retry.
+- Profile editing and change-password screens are not available because the project has no existing profile-update or authenticated password-change API. No simulated UI is provided.
 
-## 19. Troubleshooting and Common Errors
+Run the focused password-policy and bootstrap regression checks with:
 
-| Symptom | Check |
-| --- | --- |
-| PostgreSQL connection refused/no response | Start the existing PostgreSQL service and check `pg_isready -h localhost -p 5432`. Do not replace existing credentials with sample values. |
-| Account update returns a generic failure | Ensure PostgreSQL is accepting connections, inspect the backend log/HTTP status, and apply pending Alembic migrations. Status/role updates need a reachable database; the UI displays API error details or the HTTP status when no detail is returned. |
-| `Could not reach the VaultTrace API` / no API response | Start Uvicorn and confirm `curl http://127.0.0.1:8000/health` returns JSON. A browser network error means there is no HTTP response; it is different from API 401/403/404/500 responses. The API client now reports the configured base URL and timeout separately. |
-| `password authentication failed` | Confirm `DATABASE_URL` uses the correct PostgreSQL role/password/database. URL-encode reserved characters in the password. Test with `psql -h localhost -U USER -d DB_NAME -W` to prompt securely. |
-| OTP endpoint returns database/migration 503 | Check PostgreSQL auth/connectivity, then check `PYTHONPATH=backend python -m alembic -c backend/alembic.ini current` and migrate the intended database if needed. |
-| OTP email delivery unavailable | Check Mailpit/provider host, port, TLS mode, sender, and backend process environment. For local Mailpit, open `http://localhost:8025`; it captures mail and does not forward it. |
-| OTP request returns 429 | Observe `Retry-After`; the default resend cooldown is 60 seconds and hourly quota is 5 requests per email. |
-| Document upload reports storage unavailable | Check `STORAGE_PROVIDER`. For `local`, confirm `LOCAL_STORAGE_PATH` is writable and outside static directories; for `supabase`, check backend-only credentials and that the configured bucket exists and is private. |
-| Document upload is rejected | Check the configured extension allowlist, maximum byte limit, file signature, and MIME type; backend validation is authoritative. |
-| Signup returns 422 | Read the JSON `detail` in the response. Check valid email, 3–32 character username pattern, 12–128 character password, matching confirmation, and field length limits. |
-| Signup returns 409 although the email is new | Confirm the username is also unused. If both are new, check `alembic current` and apply pending migrations: PostgreSQL needs the `users.updated_at` default from revision `20261104_0007`; older databases may report a misleading duplicate message for that schema error. |
-| Browser reports network/CORS failure | Confirm API at port 8000, frontend origin matches `FRONTEND_ORIGIN`, and `VITE_API_BASE_URL` points to `/api/v1`. CORS allows GET/POST/PATCH/DELETE/OPTIONS. |
-| `ModuleNotFoundError: app` | Run commands from repository root with `PYTHONPATH=backend` (PowerShell: `$env:PYTHONPATH = "backend"`) or use Uvicorn's `--app-dir backend`. |
-| Mailpit page does not open | Ensure Docker is running and run `docker compose up -d mailpit`; check that port 8025 is not already occupied. |
-| Playwright cannot launch Chromium | Run `npx playwright install chromium` from `frontend/`. |
+```bash
+PYTHONPATH=backend python -m pytest -q backend/tests/test_security.py
+PYTHONPATH=backend python -m pytest -q backend/tests/test_auth_api.py -k admin_bootstrap
+```
 
-## 20. Security Considerations
+Run the frontend type check and production build with `cd frontend && npm run build`. The browser checks are in `frontend/e2e`; run them with `cd frontend && npm run test:e2e` in a supported Node.js environment.
 
-- Never commit `.env`, SMTP credentials, JWT/OTP secrets, or bootstrap passwords. `.env.example` contains placeholders only.
-- Use unique random JWT and OTP HMAC secrets and a strong, unique administrator password. The bootstrap command never resets an existing account.
-- OTPs are cryptographically generated, purpose-scoped, HMAC-hashed at rest, time-limited, rate-limited, attempt-limited, and single-use. Reset authorizations are random, short-lived, single-use, and stored as hashes.
-- Do not log OTPs, passwords, JWTs, reset authorizations, or SMTP credentials. Use HTTPS and a trusted SMTP provider outside local development.
-- Authorization must be checked by FastAPI; frontend routes/role values are not security controls. Every document request needs ownership or a current explicit grant. Supabase must remain private; only the backend uses the service-role secret. The browser receives neither storage keys nor permanent URLs.
-- Keep test data synthetic. Review `THREATS.md` and conduct a security review before handling real documents or deploying.
+For this enhancement stage, both focused commands and `npm run build` passed. The full backend suite did not complete in this environment; see the validation record in [PROMPTS.md](PROMPTS.md#vaulttrace-safe-enhancement-and-implementation).
 
-## 21. Future Enhancements
+## Dashboard and account management
 
-Possible future work includes retention policies, malware scanning, production SMTP hardening, hardened production containers, broader browser/E2E coverage, and deployment-specific monitoring/backups.
+- Owner and Viewer dashboards show document totals, active sharing counts, storage used, uploads over six months, file types, recent documents, recent document activity, and active documents shared by the account. These values are derived from the existing document, permission, and activity APIs. No storage quota is configured, so the UI reports storage used without presenting an invented utilization percentage.
+- The Administrator overview includes existing account and application totals plus active document and permission counts, recent audit activity, and links to existing administration pages.
+- Users can edit their own full name, username, and phone number in the dashboard profile panel. Email, role, account status, and organization remain read-only. Username uniqueness is enforced by the existing database constraint and reported as a conflict.
+- Authenticated password change verifies the current Argon2 password, enforces the shared password policy for the new password, records an audit event, and invalidates existing access tokens. The user is signed out after the change.
+- Charts use accessible SVG rendered by the frontend; no chart dependency was added. Favorites, profile pictures, invitation queues, notifications, and storage quotas are not available because the current data model does not provide those capabilities.
 
-## 22. Contribution Guidelines
+## Dashboard separation and administrator storage
 
-1. Open an issue describing the problem and proposed scope before broad changes.
-2. Preserve the existing layered structure; keep business rules in services and route logic in `backend/app/api/v1`.
-3. Add/update Pytest tests for backend behavior and Playwright tests for user-facing flows; do not use real secrets or personal data in fixtures.
-4. Update README/environment examples when behavior or setup changes. Never edit a contributor’s local `.env` as part of a routine feature change.
-5. Run backend tests, frontend build, and relevant migration/configuration checks; include actual command results in the pull request.
-6. Request focused review for authentication, authorization, cryptography, migrations, email, and deployment changes. Do not commit generated secrets or production data.
-
-## 23. License
-
-VaultTrace is distributed under the MIT License. See [`LICENSE`](LICENSE).
-
-## Project Documentation
-
-- [`PROMPTS.md`](PROMPTS.md): Commit 1–3 prompts, implementation inventories, and AI-assisted development workflow.
-- [`THREATS.md`](THREATS.md): Implementation threat model and remaining review items.
+- The user Dashboard is a document workspace with upload trends, file types, current storage usage, sharing counts, recently uploaded/accessed documents, and recent activity. Personal details and password controls live on the separate `/profile` page.
+- The administrator Overview includes user registration and active/inactive trends, document counts and types, sharing activity, organization and top-user storage charts, and a period filter (7, 30, 90 days, or all time).
+- Administrators can open **Storage management** to search and filter a paginated customer report, sort by storage or document count, and inspect a user’s document sizes, retained versions, largest file, last upload, and recent upload activity. User Management links directly to each customer’s storage detail.
+- Admin storage analytics aggregate database metadata from document records and retained versions in SQL. Soft-deleted documents remain included because the application retains their file bytes. These byte totals are not independently verified against object-store billing or object availability.
+- No quota is configured, and the schema has no storage snapshots. Remaining quota and historical storage-growth charts are therefore shown as unavailable instead of inferred.

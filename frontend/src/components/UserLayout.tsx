@@ -6,12 +6,12 @@ export function UserLayout({ children }: { children: ReactNode }) {
   const { user, logout } = useAppContext();
   const navigate = useNavigate();
   const navigation: Array<[string, string]> = user?.role === 'Owner'
-    ? [['/owner/dashboard', 'Dashboard'], ['/documents', 'My documents'], ['/documents/upload', 'Upload documents'], ['/documents/search', 'Search documents'], ['/documents/categories', 'Categories'], ['/documents/shared-by-me', 'Shared by me'], ['/documents/deleted', 'Deleted documents'], ['/owner/dashboard#profile', 'Profile']]
-    : [['/viewer/dashboard', 'Dashboard'], ['/documents', 'My documents'], ['/documents/shared', 'Shared with me'], ['/documents/search', 'Search documents'], ['/documents/categories', 'Categories'], ['/viewer/dashboard#profile', 'Profile']];
+    ? [['/owner/dashboard', 'Dashboard'], ['/documents', 'My documents'], ['/documents/upload', 'Upload documents'], ['/documents/search', 'Search documents'], ['/documents/categories', 'Categories'], ['/documents/shared-by-me', 'Shared by me'], ['/documents/deleted', 'Deleted documents'], ['/profile', 'Profile']]
+    : [['/viewer/dashboard', 'Dashboard'], ['/documents', 'My documents'], ['/documents/shared', 'Shared with me'], ['/documents/search', 'Search documents'], ['/documents/categories', 'Categories'], ['/profile', 'Profile']];
 
   async function signOut() {
-    try { await logout(); }
-    finally { navigate('/login', { replace: true }); }
+    const revoked = await logout();
+    navigate('/login', { replace: true, state: revoked ? undefined : { notice: 'You were signed out on this device, but server revocation could not be confirmed. The access token will expire automatically.' } });
   }
 
   return <div className="min-h-screen lg:grid lg:grid-cols-[240px_1fr]">

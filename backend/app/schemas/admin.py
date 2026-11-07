@@ -50,6 +50,93 @@ class AdminOverview(BaseModel):
     total_rejected_applications: int
     total_owners: int
     total_viewers: int
+    total_documents: int = 0
+    active_document_shares: int = 0
+
+
+class AdminAnalyticsPoint(BaseModel):
+    period: str
+    count: int
+    bytes: int = 0
+
+
+class AdminAnalyticsBreakdown(BaseModel):
+    name: str
+    count: int
+    bytes: int = 0
+
+
+class AdminAnalytics(BaseModel):
+    period: Literal["7d", "30d", "90d", "all"]
+    total_registered_users: int
+    total_active_users: int
+    total_inactive_users: int
+    pending_applications: int
+    total_documents: int
+    total_storage_bytes: int
+    total_shared_documents: int
+    storage_quota_bytes: int | None = None
+    registration_trends: list[AdminAnalyticsPoint]
+    upload_trends: list[AdminAnalyticsPoint]
+    user_status: list[AdminAnalyticsBreakdown]
+    file_types: list[AdminAnalyticsBreakdown]
+    storage_by_organization: list[AdminAnalyticsBreakdown]
+    storage_by_user: list[AdminAnalyticsBreakdown]
+    sharing_activity: list[AdminAnalyticsPoint]
+    storage_growth_available: bool = False
+    storage_growth_note: str
+
+
+class AdminStorageUser(BaseModel):
+    user_id: int
+    username: str
+    full_name: str
+    email: EmailStr
+    organization_id: int | None
+    organization_name: str | None
+    document_count: int
+    storage_bytes: int
+    quota_bytes: int | None = None
+    largest_file_bytes: int | None
+    last_upload_at: datetime | None
+    account_status: str
+
+
+class AdminStoragePage(BaseModel):
+    items: list[AdminStorageUser]
+    total: int
+    limit: int
+    offset: int
+
+
+class AdminStorageDocument(BaseModel):
+    document_id: str
+    document_name: str
+    file_extension: str
+    current_file_bytes: int
+    total_stored_bytes: int
+    version_count: int
+    uploaded_at: datetime
+    deleted_at: datetime | None
+
+
+class AdminStorageActivity(BaseModel):
+    action: str
+    result: str
+    created_at: datetime
+    actor_username: str
+
+
+class AdminStorageDetail(BaseModel):
+    user: AdminStorageUser
+    file_types: list[AdminAnalyticsBreakdown]
+    documents: list[AdminStorageDocument]
+    document_total: int
+    document_limit: int
+    document_offset: int
+    recent_activity: list[AdminStorageActivity]
+    historical_storage_available: bool = False
+    historical_storage_note: str
 
 
 class ApproveApplicationRequest(BaseModel):

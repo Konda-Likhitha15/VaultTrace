@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title desc">
+  <title id="title">VaultTrace authentication and security overview</title>
+  <desc id="desc">Signup proof, admin review, Argon2 login, JWT validation, role checks, and audit controls.</desc>
+  <rect width="1000" height="500" rx="20" fill="#f8fafc"/>
+  <text x="44" y="55" font-family="Arial,sans-serif" font-size="27" font-weight="700" fill="#0f172a">Identity, Authentication &amp; Authorization</text>
+  <g font-family="Arial,sans-serif">
+    <rect x="45" y="115" width="205" height="110" rx="14" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/><text x="68" y="153" font-size="18" font-weight="700" fill="#075985">1 · Verify email</text><text x="68" y="184" font-size="14" fill="#0f172a">Purpose-bound OTP</text><text x="68" y="205" font-size="13" fill="#475569">Digest · expiry · attempts</text>
+    <rect x="285" y="115" width="205" height="110" rx="14" fill="#fef3c7" stroke="#d97706" stroke-width="2"/><text x="308" y="153" font-size="18" font-weight="700" fill="#92400e">2 · Admin review</text><text x="308" y="184" font-size="14" fill="#0f172a">Pending account</text><text x="308" y="205" font-size="13" fill="#475569">Owner or Viewer role</text>
+    <rect x="525" y="115" width="205" height="110" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/><text x="548" y="153" font-size="18" font-weight="700" fill="#5b21b6">3 · Authenticate</text><text x="548" y="184" font-size="14" fill="#0f172a">Argon2 password check</text><text x="548" y="205" font-size="13" fill="#475569">Short-lived signed JWT</text>
+    <rect x="765" y="115" width="190" height="110" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/><text x="788" y="153" font-size="18" font-weight="700" fill="#166534">4 · Authorize</text><text x="788" y="184" font-size="14" fill="#0f172a">Current user + role</text><text x="788" y="205" font-size="13" fill="#475569">jti + token version</text>
+    <path d="M250 170 H275 M490 170 H515 M730 170 H755" stroke="#64748b" stroke-width="3"/><path d="M270 164 L280 170 L270 176 M510 164 L520 170 L510 176 M750 164 L760 170 L750 176" fill="#64748b"/>
+    <rect x="125" y="290" width="325" height="125" rx="14" fill="#fff" stroke="#94a3b8" stroke-width="2"/><text x="152" y="329" font-size="18" font-weight="700" fill="#0f172a">Implemented safeguards</text><text x="152" y="360" font-size="14" fill="#334155">Single-use OTP and reset authorization</text><text x="152" y="386" font-size="14" fill="#334155">Account state and revocation checked per request</text>
+    <rect x="550" y="290" width="325" height="125" rx="14" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/><text x="577" y="329" font-size="18" font-weight="700" fill="#9a3412">Not yet implemented</text><text x="577" y="360" font-size="14" fill="#334155">MFA and login rate limiting</text><text x="577" y="386" font-size="14" fill="#334155">Global/IP OTP abuse controls</text>
+  </g>
+  <text x="44" y="466" font-family="Arial,sans-serif" font-size="13" fill="#64748b">Browser route guards improve navigation; FastAPI performs the security decisions.</text>
+</svg>

@@ -397,3 +397,102 @@ Extend the existing VaultTrace app with a centralized, privacy-filtered audit ev
 - Install/use Node.js 20 or newer and rerun Playwright; browser authorization/navigation checks remain unverified here.
 - Audit rows are not tamper-evident. A privileged database operator can alter them. Consider separately controlled append-only external retention before production.
 - No `.env` edits, database reset, Git commit, push, or deployment were performed. No Commit 5/6 work was started.
+
+---
+
+# VaultTrace Safe Enhancement and Implementation
+
+## Restrictions followed
+
+- Preserved the existing API routes, response shapes, authorization rules, models, migrations, database configuration, environment variables, storage configuration, deployment files, and dependencies.
+- Did not access production systems or modify production data.
+- Preserved the pre-existing working-tree changes in `README.md`, `docs/`, and the virtual-environment files; documentation below was appended to the current README.
+- Kept existing Argon2 hashing and allowed legacy passwords at login. The stronger policy applies only when a password is newly created or reset.
+
+## Enhancements implemented
+
+- Added a shared backend password policy for registration, password reset, and first/second administrator bootstrap: minimum 12 characters, uppercase, lowercase, digit, and special character.
+- Added accessible show/hide controls (hidden by default) and strength/rule feedback for signup and reset password fields; added show/hide to login.
+- Added regression tests for password requirements, reset policy, and login acceptance of legacy passwords.
+- Improved upload queue handling: duplicate selections are suppressed, per-file local errors are shown, valid queued files can continue, successful files are not retried, and upload progress exposes ARIA progress values.
+- Added administrator dashboard refresh/retry feedback and disabled redundant search actions during loading.
+- Added browser tests for password visibility and strength feedback.
+
+## Not implemented / blocked
+
+- Profile editing and authenticated password change are blocked because the existing API has no supported update endpoint; this task did not add a new workflow.
+- MFA, malware scanning, quarantine, public sharing, folders, OCR, and background jobs remain out of scope because they require additional schema, infrastructure, or services.
+- Forgot-password request screens do not collect passwords, so there is no password field to reveal on that step.
+
+## Validation record
+
+- `PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests/test_security.py` — **6 passed**.
+- `PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests/test_auth_api.py -k admin_bootstrap` — **2 passed, 7 deselected**.
+- `npm run build` from `frontend/` — **passed** (`tsc --noEmit`, Vite production build; 120 modules).
+- `PYTHONPATH=backend ./likitha/bin/python -m compileall -q backend/app backend/tests` — **passed**.
+- `timeout 90s env PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests` — **incomplete, timed out (124)** after partial progress; this is not a full-suite pass. The repository has a previously observed stall in the signup/admin integration flow.
+- `PATH=/tmp/vaulttrace-node/bin:$PATH npm run test:e2e` from `frontend/` — **not completed**; Playwright's configured web server exited with code 1 before browser assertions ran. The frontend build passed independently.
+- After preserving bootstrap no-op behavior, the rerun of `test_security.py` passed **6 tests** and `test_auth_api.py -k admin_bootstrap` passed **2 tests, 7 deselected**.
+- `git diff --check` — **passed**.
+- No database schema, Alembic migration, deployment configuration, new environment variable, dependency, or production account was changed.
+- No commit, push, or deployment was performed.
+
+## VaultTrace dashboard, profile, and account security enhancements
+
+### Existing functionality reused
+
+- User document list and sharing APIs: `GET /documents/`, `GET /documents/shared-with-me`, `GET /documents/shared-by-me`.
+- Existing document activity API for activity summaries; only the eight most recently updated owned/shared documents are queried for the user overview.
+- Existing Admin overview, audit log, document, and sharing models. The overview response now includes aggregate non-deleted document and currently active share counts.
+- Existing `users` fields (`full_name`, `username`, `phone_number`, `organization_id`), audit service, JWT `token_version`, Argon2 implementation, and shared new-password policy.
+
+### Implemented
+
+- Owner and Viewer dashboards now display data-backed summary cards, six-month upload graph, file-type doughnut visualization, current storage used, active sharing comparison, recent documents, recent activity, recently shared items, and existing quick links. Data pages through the existing document-list API; quota utilization is explicitly unavailable because no quota exists.
+- Dashboard loading, empty, error, and retry states are implemented. SVG visualizations have accessible labels and use no added dependency.
+- `GET /users/me` now returns the existing phone and organization display fields. `PATCH /users/me` lets only the authenticated user change full name, username, and phone; email, role, status, and organization remain read-only. Username conflicts return HTTP 409. Changes use the current transaction and are audited.
+- `POST /users/me/password` requires the current password, validates the new password using the shared policy, hashes it with the existing Argon2 helper, audits the change, and increments token version to invalidate existing sessions.
+- Administrator dashboard adds active document/share aggregates, recent audit entries, and shortcuts to existing administrator views.
+- Backend tests directly exercise profile editing, duplicate usernames, current-password rejection, password policy, token-version increment, and replacement hash verification. Browser tests were added for dashboard states, profile save, password visibility/strength, and a mobile viewport.
+
+### Limitations
+
+- Dashboard activity is sampled from up to eight recently updated accessible documents rather than a new global activity API. “Recently accessed” is therefore represented only when those sampled document activity records include access events.
+- No quota, pending invitations, notification/read state, profile picture, favorites, or pinning data exists in the current schema; none is fabricated or added.
+- Frontend Playwright execution is not available in the current sandbox: Vite cannot bind to `127.0.0.1:5173` (`EPERM`).
+- The full backend suite did not finish within 90 seconds; it printed 18 passing progress markers and then stopped making progress. This is not a full-suite pass. The focused profile/password/security tests and frontend build completed.
+
+### Validation
+
+- `PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests/test_auth_api.py::test_profile_update_and_password_change_require_current_password backend/tests/test_auth_api.py::test_profile_update_rejects_duplicate_username backend/tests/test_security.py` — **8 passed**.
+- `npm run build` in `frontend/` — **passed** (`tsc --noEmit` and Vite build).
+- `PYTHONPATH=backend ./likitha/bin/python -m compileall -q backend/app backend/tests` — **passed**.
+- `timeout 90s env PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests` — **timed out (124)** after 18 progress markers; incomplete.
+- Targeted Playwright tests — **not run to assertions** because the configured Vite web server could not bind in the sandbox (`listen EPERM`).
+- No migrations, schema changes, database records, environment files, production settings, or dependencies were changed. No commit, push, or deployment was performed.
+
+## Dashboard separation and advanced administrator storage analytics
+
+### Implemented
+
+- Moved personal profile editing and authenticated password settings from the user Dashboard to the separate `/profile` route. The workspace Dashboard now contains document and sharing data only, including uploaded-this-month count, recent access/activity, and a server-calculated storage total.
+- Added authenticated `GET /api/v1/users/me/storage-usage`; storage totals are aggregated from the current document objects plus older retained versions. It scopes by the current user.
+- Expanded the Administrator Overview using `GET /api/v1/admin/analytics?period=7d|30d|90d|all`. It returns registration/upload/share trends, active/inactive users, file types, active document totals, recorded storage, organization storage, and top-user storage. The existing admin router enforces Administrator authorization.
+- Added paginated `GET /api/v1/admin/storage` with search, organization filter, and storage/document sorting; added `GET /api/v1/admin/storage/users/{user_id}` for paginated document metadata, retained-version bytes, file-type totals, largest file, last upload, and recent upload activity.
+- Added the Admin Storage Management page and customer detail route. Existing User Management rows link to those details. Charts use responsive accessible SVG; no visualization dependency was added.
+- Storage aggregation counts a document’s current `file_size` once and adds earlier versions whose version number is below the current version. Soft-deleted rows are included in recorded storage because the existing delete path retains file bytes. Current non-deleted documents are used for the file-type document chart.
+
+### Verified limitations and deferred features
+
+- The schema has no quota fields/configuration, so quota percentages and remaining storage are unavailable.
+- The schema stores no periodic storage snapshots. Monthly historical storage growth cannot be reconstructed accurately after version replacement and soft deletion; the Overview explains this instead of displaying inferred values.
+- Storage values are sums of validated database file-size metadata, not independent checks of object-store contents or provider billing usage.
+- Profile pictures, notification queues, and pending share requests are not represented in existing models and were not invented.
+
+### Validation
+
+- `PYTHONPATH=backend ./likitha/bin/python -m pytest -q backend/tests/test_admin_storage.py backend/tests/test_auth_api.py::test_profile_update_and_password_change_require_current_password backend/tests/test_auth_api.py::test_profile_update_rejects_duplicate_username backend/tests/test_security.py` — **9 passed**. The storage test verifies version de-duplication, retained bytes, per-user totals, detail results, trends, and soft-deleted storage inclusion.
+- `npm run build` from `frontend/` — **passed** (`tsc --noEmit` and Vite production build).
+- `PYTHONPATH=backend ./likitha/bin/python -m compileall -q backend/app backend/tests` and `git diff --check` — **passed**.
+- Playwright browser assertions remain unverified in this sandbox because Vite cannot bind to localhost (`listen EPERM`).
+- No database schema or migrations, environment/production/deployment configuration, storage-provider settings, or dependencies were changed. No production data was read or modified.

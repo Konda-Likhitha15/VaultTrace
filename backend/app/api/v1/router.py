@@ -4,20 +4,22 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.api.dependencies import get_current_user, get_token_claims, require_roles
 from app.api.v1.admin import router as admin_router
 from app.api.v1.documents import router as documents_router
 from app.db.session import get_db
 from app.models import User
-from app.schemas.auth import Credentials, OtpRequest, OtpResponse, OtpVerificationRequest, PasswordResetRequest, PasswordResetOtpVerificationRequest, ResetAuthorizationResponse, RegistrationRequest, RegistrationResponse, TokenResponse, UserResponse
+from app.schemas.auth import Credentials, OtpRequest, OtpResponse, OtpVerificationRequest, PasswordResetRequest, PasswordResetOtpVerificationRequest, PasswordChangeRequest, ProfileUpdateRequest, ResetAuthorizationResponse, RegistrationRequest, RegistrationResponse, StorageUsageResponse, TokenResponse, UserResponse
 from app.services.auth import InvalidCredentials, revoke_access_token, authenticate_user
+from app.core.security import hash_password, verify_password
 from app.services.email import EmailDeliveryError
 from app.services.otp import OtpCooldown, OtpExpired, OtpInvalid, OtpNotVerified, OtpRateLimited, request_otp, verify_otp
 from app.services.registrations import RegistrationConflict, create_registration_application
 from app.services.audit import record_audit_event
 from app.services.email_verifications import VerificationCooldown, VerificationExpired, VerificationInvalid, VerificationRateLimited, create_reset_authorization, reset_password, send_verification_otp, verify_verification_otp
+from app.services.admin_storage import recorded_storage_bytes
 from app.core.config import settings
 
 auth_router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -27,7 +29,7 @@ auth_logger = logging.getLogger("vaulttrace.auth")
 
 def public_user(user: User) -> UserResponse:
     """Convert a model to the public account response shape."""
-    return UserResponse(id=user.id, email=user.email, full_name=user.full_name, username=user.username, role=user.role.name, account_status=user.account_status)
+    return UserResponse(id=user.id, email=user.email, full_name=user.full_name, username=user.username, role=user.role.name, account_status=user.account_status, phone_number=user.phone_number, organization_id=user.organization_id, organization_name=user.organization.name if user.organization else None, created_at=user.created_at)
 
 
 @auth_router.post("/otp/request", response_model=OtpResponse)
@@ -173,6 +175,52 @@ api_router.include_router(auth_router)
 def read_current_user(user: User = Depends(get_current_user)) -> UserResponse:
     """Return the authenticated user's public profile."""
     return public_user(user)
+
+
+@api_router.get("/users/me/storage-usage", response_model=StorageUsageResponse, tags=["users"])
+def get_current_user_storage_usage(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StorageUsageResponse:
+    """Return the caller's recorded bytes without loading document rows into the browser."""
+    return StorageUsageResponse(total_stored_bytes=recorded_storage_bytes(db, user.id), quota_bytes=None)
+
+
+@api_router.patch("/users/me", response_model=UserResponse, tags=["users"])
+def update_current_user(payload: ProfileUpdateRequest, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserResponse:
+    """Update only editable fields on the authenticated user's own profile."""
+    full_name = payload.full_name.strip()
+    username = payload.username.strip()
+    phone_number = payload.phone_number.strip() if payload.phone_number else None
+    if not full_name or not username:
+        raise HTTPException(status_code=422, detail="Name and username cannot be blank.")
+    user.full_name = full_name
+    user.username = username
+    user.phone_number = phone_number or None
+    record_audit_event(db, "USER_PROFILE_UPDATED", actor=user, resource_type="User", resource_id=user.id, request=request, details={"changed_fields": ["full_name", "username", "phone_number"]})
+    try:
+        db.commit()
+        db.refresh(user)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That username is already in use.") from exc
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    return public_user(user)
+
+
+@api_router.post("/users/me/password", status_code=status.HTTP_204_NO_CONTENT, tags=["users"])
+def change_current_password(payload: PasswordChangeRequest, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+    """Change the authenticated user's password and invalidate existing access tokens."""
+    if not verify_password(payload.current_password.get_secret_value(), user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    user.password_hash = hash_password(payload.password.get_secret_value())
+    user.token_version += 1
+    record_audit_event(db, "USER_PASSWORD_CHANGED", actor=user, resource_type="User", resource_id=user.id, request=request)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @api_router.get("/admin", tags=["authorization"])

@@ -4,6 +4,8 @@ import { useAppContext } from '../context/AppContext';
 
 const links = [
   ['/admin/dashboard', 'Overview'],
+  ['/admin/storage', 'Storage management'],
+  ['/profile', 'My profile'],
   ['/admin/users', 'All users'],
   ['/admin/applications', 'Applications'],
   ['/admin/roles', 'Roles'],
@@ -17,11 +19,8 @@ export function AdminLayout({ children }: { children?: ReactNode }) {
   const navigate = useNavigate();
 
   async function signOut() {
-    try {
-      await logout();
-    } finally {
-      navigate('/login', { replace: true });
-    }
+    const revoked = await logout();
+    navigate('/login', { replace: true, state: revoked ? undefined : { notice: 'You were signed out on this device, but server revocation could not be confirmed. The access token will expire automatically.' } });
   }
 
   return (

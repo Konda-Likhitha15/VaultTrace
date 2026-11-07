@@ -16,6 +16,9 @@ from app.db.session import get_db
 from app.models import DocumentActivity, Organization, RegistrationApplication, User
 from app.schemas.documents import AdminDocumentPermissionResponse, AdminDocumentResponse, DocumentActivityResponse
 from app.schemas.admin import (
+    AdminAnalytics,
+    AdminStorageDetail,
+    AdminStoragePage,
     AccountStatusUpdateRequest,
     AdminActionResponse,
     AdminApplication,
@@ -46,6 +49,7 @@ from app.services.email import EmailDeliveryError, send_application_decision
 from app.services.document_collaboration import admin_document_activity, admin_document_metadata, admin_document_permissions, admin_revoke_permission
 from app.services.documents import DocumentNotFound
 from app.services.audit import get_audit_event, list_audit_events, record_audit_event, summarize_audit_events
+from app.services.admin_storage import admin_analytics, admin_storage_detail, admin_storage_page
 
 router = APIRouter(prefix="/admin", tags=["administration"], dependencies=[Depends(require_roles("Administrator"))])
 
@@ -132,6 +136,40 @@ def _conflict(exc: Exception) -> HTTPException:
 def get_dashboard(db: Session = Depends(get_db)) -> AdminOverview:
     """Return live aggregate counts queried from PostgreSQL."""
     return AdminOverview(**dashboard_overview(db))
+
+
+@router.get("/analytics", response_model=AdminAnalytics)
+def get_analytics(period: str = Query(default="30d", pattern="^(7d|30d|90d|all)$"), db: Session = Depends(get_db)) -> AdminAnalytics:
+    """Return aggregate-only workspace analytics from existing records."""
+    return AdminAnalytics(**admin_analytics(db, period))
+
+
+@router.get("/storage", response_model=AdminStoragePage)
+def get_storage_users(
+    search: str | None = Query(default=None, max_length=160),
+    organization_id: int | None = Query(default=None, ge=1),
+    sort_by: str = Query(default="storage_bytes", pattern="^(storage_bytes|document_count)$"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> AdminStoragePage:
+    """Return paginated recorded storage consumption for registered users."""
+    items, total = admin_storage_page(db, search=search, organization_id=organization_id, sort_by=sort_by, limit=limit, offset=offset)
+    return AdminStoragePage(items=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/storage/users/{user_id}", response_model=AdminStorageDetail)
+def get_user_storage_detail(
+    user_id: int,
+    document_limit: int = Query(default=50, ge=1, le=100),
+    document_offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> AdminStorageDetail:
+    """Return a bounded storage detail page for one customer account."""
+    detail = admin_storage_detail(db, user_id, document_limit=document_limit, document_offset=document_offset)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return AdminStorageDetail(**detail)
 
 
 @router.get("/users", response_model=list[AdminUser])

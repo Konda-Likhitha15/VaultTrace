@@ -8,7 +8,12 @@ export type User = {
   username: string;
   role: RoleName;
   account_status: string;
+  phone_number?: string | null;
+  organization_id?: number | null;
+  organization_name?: string | null;
+  created_at?: string | null;
 };
+export type StorageUsage = { total_stored_bytes: number; quota_bytes: number | null };
 
 export type TokenResponse = {
   access_token: string;
@@ -25,6 +30,49 @@ export type AdminOverview = {
   total_rejected_applications: number;
   total_owners: number;
   total_viewers: number;
+  total_documents: number;
+  active_document_shares: number;
+};
+
+export type AnalyticsPeriod = '7d' | '30d' | '90d' | 'all';
+export type AdminAnalyticsPoint = { period: string; count: number; bytes: number };
+export type AdminAnalyticsBreakdown = { name: string; count: number; bytes: number };
+export type AdminAnalytics = {
+  period: AnalyticsPeriod;
+  total_registered_users: number;
+  total_active_users: number;
+  total_inactive_users: number;
+  pending_applications: number;
+  total_documents: number;
+  total_storage_bytes: number;
+  total_shared_documents: number;
+  storage_quota_bytes: number | null;
+  registration_trends: AdminAnalyticsPoint[];
+  upload_trends: AdminAnalyticsPoint[];
+  user_status: AdminAnalyticsBreakdown[];
+  file_types: AdminAnalyticsBreakdown[];
+  storage_by_organization: AdminAnalyticsBreakdown[];
+  storage_by_user: AdminAnalyticsBreakdown[];
+  sharing_activity: AdminAnalyticsPoint[];
+  storage_growth_available: boolean;
+  storage_growth_note: string;
+};
+export type AdminStorageUser = {
+  user_id: number; username: string; full_name: string; email: string;
+  organization_id: number | null; organization_name: string | null;
+  document_count: number; storage_bytes: number; quota_bytes: number | null;
+  largest_file_bytes: number | null; last_upload_at: string | null; account_status: string;
+};
+export type AdminStoragePage = { items: AdminStorageUser[]; total: number; limit: number; offset: number };
+export type AdminStorageDocument = {
+  document_id: string; document_name: string; file_extension: string; current_file_bytes: number;
+  total_stored_bytes: number; version_count: number; uploaded_at: string; deleted_at: string | null;
+};
+export type AdminStorageActivity = { action: string; result: string; created_at: string; actor_username: string };
+export type AdminStorageDetail = {
+  user: AdminStorageUser; file_types: AdminAnalyticsBreakdown[]; documents: AdminStorageDocument[];
+  document_total: number; document_limit: number; document_offset: number;
+  recent_activity: AdminStorageActivity[]; historical_storage_available: boolean; historical_storage_note: string;
 };
 
 export type AdminUser = {

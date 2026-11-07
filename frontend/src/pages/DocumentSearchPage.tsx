@@ -75,7 +75,7 @@ export function DocumentSearchPage() {
       <label className="text-sm font-medium">Uploaded to<input className="mt-1 w-full rounded border px-3 py-2" name="date_to" type="date" /></label>
       <label className="text-sm font-medium">Sort by<select className="mt-1 w-full rounded border px-3 py-2" name="sort_by"><option value="created_at">Upload date</option><option value="document_name">Document name</option><option value="file_size">File size</option></select></label>
       <label className="text-sm font-medium">Order<select className="mt-1 w-full rounded border px-3 py-2" name="sort_order"><option value="desc">Descending</option><option value="asc">Ascending</option></select></label>
-      <div className="flex items-end gap-2 lg:col-span-4"><button className="rounded bg-indigo-700 px-4 py-2 font-semibold text-white" type="submit">Search</button><button className="rounded border px-4 py-2" onClick={clear} type="button">Clear filters</button></div>
+      <div className="flex items-end gap-2 lg:col-span-4"><button className="rounded bg-indigo-700 px-4 py-2 font-semibold text-white disabled:opacity-50" disabled={loading} type="submit">{loading ? 'Searching…' : 'Search'}</button><button className="rounded border px-4 py-2 disabled:opacity-50" disabled={loading} onClick={clear} type="button">Clear filters</button></div>
     </form>
     {error && <p className="mt-4 rounded bg-red-50 p-3 text-sm text-red-800" role="alert">{error}</p>}
     {loading && <p className="mt-5 text-gray-600" role="status">Searching authorized documents…</p>}

@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { PasswordConfirmation } from '../components/PasswordConfirmation';
 import { submitPasswordReset } from '../services/api';
+import { passwordPolicyMessage } from '../utils/passwordPolicy';
 
 export function ResetPasswordPage() {
   const location = useLocation();
@@ -16,6 +17,8 @@ export function ResetPasswordPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('');
     if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
+    const passwordIssue = passwordPolicyMessage(password);
+    if (passwordIssue) { setError(passwordIssue); return; }
     setBusy(true);
     try { await submitPasswordReset(authorizationToken ?? '', password, confirmPassword); setComplete(true); }
     catch (cause) { setError(axios.isAxiosError(cause) && typeof cause.response?.data?.detail === 'string' ? cause.response.data.detail : 'Unable to reset password. Request a new code and try again.'); }

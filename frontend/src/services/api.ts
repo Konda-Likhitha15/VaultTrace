@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AdminActionResponse, AdminApplication, AdminOverview, AdminUser, AuditFilters, AuditLogPage, AuditSummary, DocumentActivity, DocumentFilters, DocumentMetadata, DocumentPermission, DocumentSearchResult, DocumentVersion, EligibleShareUser, Organization, SharedByMe, SharedDocument, TokenResponse, User } from '../types';
+import type { AdminActionResponse, AdminAnalytics, AdminApplication, AdminOverview, AdminStorageDetail, AdminStoragePage, AdminUser, AnalyticsPeriod, AuditFilters, AuditLogPage, AuditSummary, DocumentActivity, DocumentFilters, DocumentMetadata, DocumentPermission, DocumentSearchResult, DocumentVersion, EligibleShareUser, Organization, SharedByMe, SharedDocument, StorageUsage, TokenResponse, User } from '../types';
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8000/api/v1';
 export const api = axios.create({ baseURL: configuredBaseUrl.replace(/\/+$/, ''), timeout: 30_000 });
@@ -91,6 +91,30 @@ function authHeaders(token: string) {
 
 export async function getAdminOverview(token: string): Promise<AdminOverview> {
   return (await api.get('/admin/dashboard', authHeaders(token))).data as AdminOverview;
+}
+
+export async function getAdminAnalytics(token: string, period: AnalyticsPeriod): Promise<AdminAnalytics> {
+  return (await api.get('/admin/analytics', { ...authHeaders(token), params: { period } })).data as AdminAnalytics;
+}
+
+export async function getMyStorageUsage(token: string): Promise<StorageUsage> {
+  return (await api.get('/users/me/storage-usage', authHeaders(token))).data as StorageUsage;
+}
+
+export async function getAdminStorageUsers(token: string, params: { search?: string; organization_id?: number; sort_by?: 'storage_bytes' | 'document_count'; limit?: number; offset?: number }): Promise<AdminStoragePage> {
+  return (await api.get('/admin/storage', { ...authHeaders(token), params })).data as AdminStoragePage;
+}
+
+export async function getAdminStorageDetail(token: string, userId: number, documentOffset = 0, documentLimit = 50): Promise<AdminStorageDetail> {
+  return (await api.get(`/admin/storage/users/${userId}`, { ...authHeaders(token), params: { document_offset: documentOffset, document_limit: documentLimit } })).data as AdminStorageDetail;
+}
+
+export async function updateMyProfile(token: string, values: { full_name: string; username: string; phone_number: string | null }): Promise<User> {
+  return (await api.patch('/users/me', values, authHeaders(token))).data as User;
+}
+
+export async function changeMyPassword(token: string, values: { current_password: string; password: string; confirm_password: string }): Promise<void> {
+  await api.post('/users/me/password', values, authHeaders(token));
 }
 
 export async function getAuditLogs(token: string, filters: AuditFilters, offset: number, limit = 25): Promise<AuditLogPage> {

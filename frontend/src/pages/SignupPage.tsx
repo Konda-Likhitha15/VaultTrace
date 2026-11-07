@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { requestEmailOtp, submitRegistration, verifyEmailOtp } from '../services/api';
 import { OtpVerification } from '../components/OtpVerification';
+import { PasswordField } from '../components/PasswordField';
+import { passwordPolicyMessage } from '../utils/passwordPolicy';
 
 function errorText(error: unknown): string {
   if (axios.isAxiosError(error)) {
@@ -91,6 +93,11 @@ export function SignupPage() {
       setError('Passwords do not match.');
       return;
     }
+    const passwordIssue = passwordPolicyMessage(password);
+    if (passwordIssue) {
+      setError(passwordIssue);
+      return;
+    }
     setBusy('signup');
     try {
       const result = await submitRegistration({
@@ -142,13 +149,8 @@ export function SignupPage() {
               </div>
             </label>
             {otpSent && <OtpVerification key={otpSentAt} value={otp} onChange={setOtp} onVerify={() => void verifyCode()} onResend={() => void sendCode(true)} busy={busy !== null} verified={emailVerified} sentAt={otpSentAt} />}
-            <label className="text-sm font-medium">Password
-              <input className="mt-1 w-full rounded border border-gray-300 px-3 py-2" autoComplete="new-password" minLength={12} maxLength={128} required type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-              <span className="mt-1 block text-xs font-normal text-gray-500">Use at least 12 characters.</span>
-            </label>
-            <label className="text-sm font-medium">Confirm password
-              <input className="mt-1 w-full rounded border border-gray-300 px-3 py-2" autoComplete="new-password" minLength={12} maxLength={128} required type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
-            </label>
+            <PasswordField id="signup-password" label="Password" autoComplete="new-password" minLength={12} value={password} onChange={setPassword} showStrength />
+            <PasswordField id="signup-confirm-password" label="Confirm password" autoComplete="new-password" minLength={12} value={confirmPassword} onChange={setConfirmPassword} />
             {error && <p className="rounded bg-red-50 p-3 text-sm text-red-800 sm:col-span-2" role="alert">{error}</p>}
             {notice && <p className="rounded bg-blue-50 p-3 text-sm text-blue-800 sm:col-span-2" role="status">{notice}</p>}
             <button className="rounded bg-indigo-700 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:col-span-2" type="submit" disabled={busy !== null || !emailVerified}>

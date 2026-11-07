@@ -5,6 +5,7 @@ from pydantic import EmailStr, TypeAdapter
 import re
 
 from app.core.config import settings
+from app.core.password_policy import validate_new_password
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models import Role, User
@@ -19,9 +20,6 @@ def bootstrap_admin() -> bool:
     full_name = settings.admin_bootstrap_full_name
     if not all((email, username, password, full_name)):
         raise ValueError("Set ADMIN_BOOTSTRAP_EMAIL, ADMIN_BOOTSTRAP_USERNAME, ADMIN_BOOTSTRAP_PASSWORD, and ADMIN_BOOTSTRAP_FULL_NAME")
-    if len(password) < 12:
-        raise ValueError("ADMIN_BOOTSTRAP_PASSWORD must contain at least 12 characters")
-
     normalized_email = str(TypeAdapter(EmailStr).validate_python(email)).lower()
     normalized_username = username.strip().lower()
     if not re.fullmatch(r"[a-zA-Z0-9_.-]{3,32}", normalized_username):
@@ -36,6 +34,10 @@ def bootstrap_admin() -> bool:
             return False
         if session.scalar(select(User.id).where((User.email == normalized_email) | (User.username == normalized_username))) is not None:
             raise ValueError("Bootstrap email or username already belongs to a non-administrator account")
+        try:
+            validate_new_password(password)
+        except ValueError as exc:
+            raise ValueError("ADMIN_BOOTSTRAP_PASSWORD does not meet the password policy") from exc
         admin = User(
             full_name=full_name.strip(),
             username=normalized_username,

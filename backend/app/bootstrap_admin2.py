@@ -11,6 +11,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
+from app.core.password_policy import validate_new_password
 
 
 def _select_production_database() -> None:
@@ -59,9 +60,6 @@ def bootstrap_admin2() -> bool:
     full_name = settings.admin2_full_name
     if not all((email, username, password, full_name)):
         raise ValueError("Set ADMIN2_EMAIL, ADMIN2_USERNAME, ADMIN2_PASSWORD, and ADMIN2_FULL_NAME.")
-    if len(password) < 12:
-        raise ValueError("ADMIN2_PASSWORD must contain at least 12 characters.")
-
     try:
         normalized_email = str(TypeAdapter(EmailStr).validate_python(email)).lower()
     except Exception:
@@ -111,6 +109,11 @@ def bootstrap_admin2() -> bool:
                     ):
                         return False
                 raise ValueError("ADMIN2 email or username already belongs to a different account.")
+
+            try:
+                validate_new_password(password)
+            except ValueError as exc:
+                raise ValueError("ADMIN2_PASSWORD does not meet the password policy.") from exc
 
             admin = User(
                 full_name=normalized_full_name,
